@@ -1,7 +1,7 @@
 """Standalone reader for Assetto Corsa .kn5 files.
 
 Format (version 5-6):
-  "sc6969", u32 version, [u32 extra_len + bytes if version > 5]
+  "sc6969", u32 version, [u32, unused, if version > 5]
   u32 texture_count, then per texture: u32 type, str name, u32 size, bytes
   u32 material_count, then per material: see read_material
   node tree, depth first
@@ -9,46 +9,42 @@ Format (version 5-6):
 import struct, sys, os, math
 
 
-def _texture_table_fits(data, p):
-    if p + 4 > len(data):
-        return False
-    count = struct.unpack_from('<I', data, p)[0]
-    p += 4
-    if count > (len(data) - p) // 12:
-        return False
-    for _ in range(count):
-        if p + 8 > len(data):
-            return False
-        p += 4
-        name_len = struct.unpack_from('<I', data, p)[0]
-        p += 4
-        if name_len > len(data) - p:
-            return False
-        p += name_len
-        if p + 4 > len(data):
-            return False
-        size = struct.unpack_from('<I', data, p)[0]
-        p += 4
-        if size > len(data) - p:
-            return False
-        p += size
-    return True
+def read_header(r):
+    """Step a Reader past the signature and version; returns the version."""
+    sig = r.d[0:6]
+    if sig != b'sc6969':
+        raise ValueError('not a kn5 file, signature was %r' % sig)
+    r.skip(6)
+    version = r.u32()
+    if version > 5:
+        # One value, not the length of a block to skip. It is 0 in most
+        # files, which hid the difference; Kunos' Brands Hatch, Barcelona,
+        # Nordschleife and Red Bull Ring carry 781233, 912125, 673425 and
+        # 743221 there, and skipping that many bytes landed in the middle of
+        # a texture. Read and ignored, all 842 kn5 files of 79 tracks parse,
+        # 773 of them to their last byte.
+        r.u32()
+    return version
 
 
 def texture_table_offset(data):
-    if data[:6] != b'sc6969':
-        raise ValueError('not a kn5 file, signature was %r' % data[:6])
-    version = struct.unpack_from('<I', data, 6)[0]
-    if version <= 5:
-        return 10
+    """Byte offset where the KN5 texture table begins."""
+    r = Reader(data)
+    read_header(r)
+    return r.p
 
-    if len(data) < 14:
-        raise ValueError('truncated KN5 version %d header' % version)
-    extra = struct.unpack_from('<I', data, 10)[0]
-    for p in (14 + extra, 14):
-        if _texture_table_fits(data, p):
-            return p
-    raise ValueError('unrecognized KN5 version %d texture header' % version)
+
+def embedded_textures(path):
+    """(name, bytes) of every texture stored inside a kn5, in file order."""
+    with open(path, 'rb') as f:
+        r = Reader(f.read())
+    read_header(r)
+    for _ in range(r.u32()):
+        r.u32()                 # type
+        name = r.string()
+        size = r.u32()
+        yield name, r.d[r.p:r.p + size]
+        r.skip(size)
 
 
 class Reader:
@@ -231,12 +227,7 @@ class KN5:
             data = f.read()
         self.size = len(data)
         r = Reader(data)
-        sig = r.d[0:6]
-        if sig != b'sc6969':
-            raise ValueError('not a kn5 file, signature was %r' % sig)
-        r.skip(6)
-        self.version = r.u32()
-        r.p = texture_table_offset(data)
+        self.version = read_header(r)
         self.textures = []
         for _ in range(r.u32()):
             ttype = r.u32()

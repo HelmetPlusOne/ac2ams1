@@ -460,9 +460,13 @@ def main():
         with open(mapping) as f:
             mdata = json.load(f)
         cutouts = mdata.get("alpha_ref", {})
+        # By id where the export recorded one; by name for meshes exported
+        # before ids existed (--skip-geometry over an older build).
         flags = {m["mesh"]: m for m in mdata["meshes"]}
+        by_id = {m["id"]: m for m in mdata["meshes"] if "id" in m}
         for row in exported:
-            cur = flags.get(row.get("mesh"))
+            cur = (by_id.get(row["id"]) if row.get("id")
+                   else flags.get(row.get("mesh")))
             if cur is not None:
                 row["render"] = cur.get("render", True)
                 row["shadow"] = shadow_caster(cur, cutouts)
