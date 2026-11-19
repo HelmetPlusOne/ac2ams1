@@ -199,7 +199,9 @@ def main():
                     help='an AMS GameData\\Locations folder, or "auto" to find it '
                          'in your Steam libraries')
     ap.add_argument("--hour", default="12:00")
-    ap.add_argument("--bake-size", type=int, default=12288)
+    ap.add_argument("--bake-size", type=int, default=2048)
+    ap.add_argument("--texture-scale", type=float, default=0.5,
+                    help="scale factor per texture dimension (default 0.5 halves width and height)")
     ap.add_argument("--grain", default="2")
     ap.add_argument("--detail-metres", default="2.0",
                     help="how often the game repeats a second stage detail texture")
@@ -267,7 +269,9 @@ def main():
     step(2, "texture formats")
     import steam_paths
     run([py, "fix_textures.py", os.path.join(out, "textures"),
-         "--texconv", steam_paths.TEXCONV, "--jobs", str(args.jobs)])
+         "--texconv", steam_paths.TEXCONV,
+         "--scale", str(args.texture_scale),
+         "--jobs", str(args.jobs)])
     tex = os.path.join(out, "textures")
     write_clear_texture(os.path.join(tex, "_invisible.dds"))
     # Black. White was the neutral value if rF2 multiplied this by

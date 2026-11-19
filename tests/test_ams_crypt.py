@@ -8,6 +8,7 @@ from unittest import mock
 
 import ams_crypt
 import finalize_track
+import fix_textures
 import gmt_rf1
 import verify_install
 
@@ -419,6 +420,17 @@ class AmsFinalizeTests(unittest.TestCase):
             self.assertTrue(database.startswith(layout_id + "\n"))
             self.assertIn("GrandPrixName = %s" % venue, database)
             self.assertIn("TerrainDataFile = ..\\%s.tdf" % venue, database)
+
+    def test_texture_target_size_halves_and_snaps_to_dx9_pow2(self):
+        self.assertEqual(fix_textures.target_size(4096, 0.5), 2048)
+        self.assertEqual(fix_textures.target_size(2048, 0.5), 1024)
+        self.assertEqual(fix_textures.target_size(1024, 0.5), 512)
+        self.assertEqual(fix_textures.target_size(600, 0.5), 512)
+        self.assertEqual(fix_textures.target_size(124, 0.5), 64)
+        self.assertEqual(fix_textures.target_size(8, 0.5), 4)
+        self.assertEqual(fix_textures.target_size(4, 0.5), 4)
+        self.assertEqual(fix_textures.target_size(4096, 1.0), 4096)
+        self.assertEqual(fix_textures.target_size(600, 1.0), 1024)
 
 
 if __name__ == "__main__":

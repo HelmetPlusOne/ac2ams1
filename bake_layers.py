@@ -84,8 +84,8 @@ TARGET_DENSITY = 600.0
 # A tiled surface repeats its texture many times over, so a huge texture buys
 # almost nothing: the repeats already supply the granularity. Only surfaces
 # mapped once, where every texel lands somewhere unique, are worth the size.
-# Power of two for AMS1 / DirectX 9.
-TILED_CAP = 2048
+# Power of two for AMS1 / DirectX 9 (halved for 32-bit VAS budget).
+TILED_CAP = 1024
 
 
 # rF2's own cut-outs all carry one threshold. Every tree, shrub, crowd and
@@ -317,6 +317,9 @@ def bake_material(mat, tex_dir, tmp, cap, target=TARGET_DENSITY, grain=1.0,
     if w * h > budget:
         shrink = (float(budget) / (w * h)) ** 0.5
         w, h = max(4, int(w * shrink)), max(4, int(h * shrink))
+    from fix_textures import pow2_size
+    max_dim = pow2_size(min(cap, 4096))
+    w, h = pow2_size(w, cap=max_dim), pow2_size(h, cap=max_dim)
     upscale = float(w) / bw
 
     base = to_rgba(base_path, tmp, w, h)
@@ -662,7 +665,7 @@ def detail_normal(name, height, tex_dir, tmp, texconv):
     return out
 
 
-def single_detail(mat, tex_dir, tmp, files, name=None, size=1024, texconv=TEXCONV):
+def single_detail(mat, tex_dir, tmp, files, name=None, size=512, texconv=TEXCONV):
     """Name the detail rF2 should sample itself, and say if a mask paints.
 
     A baked copy of a detail can only hold as much grain as the bake's
@@ -982,7 +985,7 @@ def main():
                     help="how finely detail layers tile inside a baked texture")
     ap.add_argument("--density", type=float, default=TARGET_DENSITY,
                     help="texels per metre to aim for on ground surfaces")
-    ap.add_argument("--size", type=int, default=12288,
+    ap.add_argument("--size", type=int, default=2048,
                     help="largest dimension of a baked texture")
     ap.add_argument("--detail-metres", type=float, default=2.0,
                     help="how often a second stage detail repeats on the ground")
