@@ -157,6 +157,11 @@ def patch_tdf(template, grip, drivable=()):
     """
     with open(template, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
+    # AMS1's terrain.tdf template inherits rF1's skidhard.tga and
+    # racegroove.tga, which are absent from AMS1's COMMONMAPS.MAS (where Reiza
+    # ships skiddry.tga and groovedry.tga instead).
+    text = re.sub(r"(?i)\bTex=skidhard\.tga\b", "Tex=skiddry.tga", text)
+    text = re.sub(r"(?i)\bTex=racegroove\.tga\b", "Tex=groovedry.tga", text)
     chunks = re.split(r"(?m)^(?=\[FEEDBACK\])", text)
     value = re.compile(r"(Dry|Wet)=([A-Za-z_][A-Za-z0-9_]*|[\d.]+)")
     applied = {}

@@ -18,14 +18,15 @@ import subprocess
 
 from steam_paths import TEXCONV  # in whichever Steam library has rF2
 from parallel import default_jobs, ordered_map
-BLOCK = (b"DXT1", b"DXT3", b"DXT5", b"BC4U", b"BC5U", b"ATI1", b"ATI2")
+# AMS1 runs on DirectX 9 (gMotor 2.0), which requires DXT1/DXT3/DXT5 and
+# power-of-two dimensions for mipmapped block-compressed textures.
+BLOCK = (b"DXT1", b"DXT3", b"DXT5")
+MAX_TEX_DIM = 4096
 
 # Rebuilding a block compressed texture means decoding and recompressing it, so
 # it is only worth doing in its own format: turning a normal map into BC3 would
 # cost far more than the missing mips are worth.
-SAME_FORMAT = {b"DXT1": "BC1_UNORM", b"DXT3": "BC2_UNORM", b"DXT5": "BC3_UNORM",
-               b"BC4U": "BC4_UNORM", b"ATI1": "BC4_UNORM",
-               b"BC5U": "BC5_UNORM", b"ATI2": "BC5_UNORM"}
+SAME_FORMAT = {b"DXT1": "BC1_UNORM", b"DXT3": "BC2_UNORM", b"DXT5": "BC3_UNORM"}
 
 # Below this a short chain costs nothing to look at and recompressing only adds
 # error, so small masks and markers are left exactly as AC shipped them.
@@ -34,6 +35,16 @@ MIP_MIN = 128
 # Building mips, texconv weights colour by alpha unless told to treat the two
 # separately. AC stores plenty of opaque surfaces with a zero alpha channel, and
 # without this their smaller mips come out black.
+
+
+def is_pow2(n):
+    return n >= 4 and (n & (n - 1)) == 0
+
+
+def pow2_size(n, cap=MAX_TEX_DIM):
+    """Next power of two >= max(4, n), capped at MAX_TEX_DIM for DX9."""
+    n = max(4, int(n))
+    return min(cap, 1 << (n - 1).bit_length())
 
 
 def full_levels(w, h):
@@ -99,10 +110,14 @@ def main():
                 print("skip (not dds): %s" % f)
             continue
         w, h, fourcc, bpp, mips = info
+        bad_size = not is_pow2(w) or not is_pow2(h) or max(w, h) > MAX_TEX_DIM
         if min(w, h) < 4:
             todo.append((f, w, h, bpp, args.format, "under 4x4"))
         elif fourcc not in BLOCK:
             todo.append((f, w, h, bpp, args.format, "%dbpp" % bpp))
+        elif bad_size:
+            todo.append((f, w, h, bpp, SAME_FORMAT[fourcc],
+                         "non-pow2 -> %dx%d" % (pow2_size(w), pow2_size(h))))
         elif (not args.keep_mips and fourcc in SAME_FORMAT
               and max(w, h) >= MIP_MIN and mips < full_levels(w, h)):
             todo.append((f, w, h, bpp, SAME_FORMAT[fourcc],
@@ -122,10 +137,11 @@ def main():
             # texconv picks its decoder by extension: give it the real one.
             src = os.path.join(work, os.path.splitext(f)[0] + "." + why.split()[0])
             shutil.copyfile(os.path.join(tex_dir, f), src)
-        r = subprocess.run(
-            [args.texconv, "-f", fmt, "-m", "0", "-sepalpha", "-y", "-ft", "dds",
-             "-o", work, src],
-            cwd=tex_dir, capture_output=True, text=True)
+        cmd = [args.texconv, "-f", fmt, "-m", "0", "-sepalpha", "-y", "-ft", "dds"]
+        if w > 0 and h > 0 and (not is_pow2(w) or not is_pow2(h) or max(w, h) > MAX_TEX_DIM):
+            cmd += ["-w", str(pow2_size(w)), "-h", str(pow2_size(h))]
+        cmd += ["-o", work, src]
+        r = subprocess.run(cmd, cwd=tex_dir, capture_output=True, text=True)
         out = None
         for cand in (f, os.path.splitext(f)[0] + ".DDS",
                      os.path.splitext(f)[0] + ".dds"):
@@ -133,16 +149,19 @@ def main():
             if os.path.exists(p):
                 out = p
                 break
-        # Block compression works in 4x4 tiles and rF2 will not create a
-        # texture smaller than one ("error initializing image surface"); mods
-        # embed 1x1 placeholders. Stretch anything that small to 4x4.
+        # DX9/AMS1 requires power-of-two block-compressed textures (>= 4x4,
+        # <= 4096). Images decoded from PNG/JPG-named .dds only reveal their
+        # dimensions here, so resize if needed.
         got = describe(out) if out else None
-        if r.returncode == 0 and got and min(got[0], got[1]) < 4:
+        if r.returncode == 0 and got and (
+                not is_pow2(got[0]) or not is_pow2(got[1])
+                or max(got[0], got[1]) > MAX_TEX_DIM):
+            tw, th = pow2_size(got[0]), pow2_size(got[1])
             r = subprocess.run(
                 [args.texconv, "-f", fmt, "-m", "0", "-sepalpha", "-y", "-ft", "dds",
-                 "-w", str(max(4, got[0])), "-h", str(max(4, got[1])),
+                 "-w", str(tw), "-h", str(th),
                  "-o", work, src], cwd=tex_dir, capture_output=True, text=True)
-            why += ", stretched to 4x4"
+            why += ", resized to %dx%d" % (tw, th)
         if r.returncode != 0 or out is None:
             return False, "  FAILED %-28s %s" % (f, (r.stdout or r.stderr).strip()[-70:])
         shutil.move(out, os.path.join(tex_dir, f))

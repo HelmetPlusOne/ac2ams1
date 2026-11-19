@@ -39,15 +39,15 @@ MASFile=COMMONMAPS.MAS
 
 View=mainview
 {{
-  Clear=False
-  Color=(0, 0, 0)
+  Clear=True
+  Color=(145, 185, 230)
   Size=(1.00, 1.00) Center=(0.5, 0.5)
   FOV=(77.75, 31.25)
   ClipPlanes=(0.05, 5000.00)
   View=rearview
   {{
-    Clear=False
-    Color=(0, 0, 0)
+    Clear=True
+    Color=(145, 185, 230)
     Size=(1024.00, 64.00) Center=(512, 32.00)
     FOV=(77.75, 31.25)
     ClipPlanes=(0.30, 500.00)
@@ -64,6 +64,7 @@ Light=FDirect01
  Type=Directional Pos=(0.0,25000.0,0.0) Dir=({sx:.3f}, {sy:.3f}, {sz:.3f}) Intensity=(1.0) Color=({sun}, {sun}, {sun})
 }}
 
+{skybox}
 """
 
 GDB = """{layout}
@@ -87,6 +88,9 @@ GDB = """{layout}
   RacePitKPH = 60
   NormalPitKPH = 60
 
+  SkyBlendSunAngles=(-20.0,-5.0,10.0,25.0)
+  ShadowMinSunAngle=15.0
+
   // Sun high overhead. Change these to move the sun.
   TestDayStart = {hour}
   Practice1Start = {hour}
@@ -96,9 +100,35 @@ GDB = """{layout}
   WarmupStart = {hour}
   RaceStart = {hour}
 
-  Latitude = 40.0
+  Latitude = -25.0
   NorthDirection = 0
   Altitude = 0
+  RaceDate = March 17
+
+  SunriseAmbientRGB = (150,150,175)
+  SunriseDirectionalRGB = (180,155,145)
+  SunriseFogRGB = (113,123,152)
+  SunriseFogIn = (0)
+  SunriseFogOut = (1000)
+
+  DayAmbientRGB = (165,165,170)
+  DayDirectionalRGB = (255,250,240)
+  DayFogRGB = (185,211,243)
+  DayFogIn = (250)
+  DayFogOut = (4000)
+
+  SunsetAmbientRGB = (171,172,190)
+  SunsetDirectionalRGB = (223,157,117)
+  SunsetFogRGB = (90,85,50)
+  SunsetFogIn = (0)
+  SunsetFogOut = (1000)
+
+  NightAmbientRGB = (22,30,42)
+  NightDirectionalRGB = (10,10,16)
+  NightFogRGB = (15,12,10)
+  NightFogIn = (0)
+  NightFogOut = (750)
+
   SettingsFolder = {venue}
 }}
 """
@@ -256,6 +286,142 @@ def stage_mas_archives(source_dir, stage_dir, venue):
                      (venue + ".MAS", venue + "MAP.MAS"))
 
 
+SKY_ASSETS = (
+    "SRPL_SKY3_DOME1.GMT",
+    "SRPL_SKY3_SUN1.GMT",
+)
+
+
+def stage_skybox(stage_dir, locations, venue):
+    """Stage AMS1's required skyboxi / CLOUDS / Sky hierarchy.
+
+    Every stock AMS1 scene defines Instance=skyboxi; without it AMS1 crashes
+    dereferencing a null Instance pointer on the first render frame and leaves
+    daytime lighting at midnight black.
+    """
+    import gmt_rf1
+
+    with open(os.path.join(stage_dir, "skyboxi.gmt"), "wb") as f:
+        f.write(gmt_rf1.make_minimal_rf1_gmt("skyboxi", "_invisible.dds"))
+
+    found = {}
+    if locations and os.path.isdir(locations):
+        wanted = {name.lower(): name for name in SKY_ASSETS}
+        for entry in sorted(os.listdir(locations)):
+            if entry.casefold() == venue.casefold():
+                continue
+            folder = os.path.join(locations, entry)
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                key = name.lower()
+                if key in wanted and wanted[key] not in found:
+                    src = os.path.join(folder, name)
+                    if os.path.isfile(src):
+                        found[wanted[key]] = src
+            if len(found) == len(SKY_ASSETS):
+                break
+
+    sky_meshes = []
+    for asset in SKY_ASSETS:
+        src = found.get(asset)
+        if src:
+            shutil.copy2(src, os.path.join(stage_dir, asset))
+            sky_meshes.append(
+                "      MeshFile=%s CollTarget=False HATTarget=False ShadowReceiver=False"
+                % asset
+            )
+
+    if not sky_meshes:
+        sky_meshes.append(
+            "      MeshFile=skyboxi.gmt CollTarget=False HATTarget=False Render=False"
+        )
+
+    return (
+        "Instance=skyboxi\n"
+        "{\n"
+        "  Moveable=True\n"
+        "  MeshFile=skyboxi.gmt CollTarget=False HATTarget=False Render=False\n"
+        "  Instance=CLOUDS\n"
+        "  {\n"
+        "    Moveable=True\n"
+        "    MeshFile=skyboxi.gmt CollTarget=False HATTarget=False Render=False\n"
+        "    Instance=Sky\n"
+        "    {\n"
+        "      Moveable=True\n"
+        + "\n".join(sky_meshes) + "\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def _pit_gate_corners(pos, perp, half_width=8.0, height=8.0):
+    x, y, z = pos
+    px, _py, pz = perp
+    plen = (px * px + pz * pz) ** 0.5 or 1.0
+    px, pz = px / plen, pz / plen
+    y0 = y - 1.0
+    y1 = y + height
+    return (
+        (x - px * half_width, y0, z - pz * half_width),
+        (x + px * half_width, y0, z + pz * half_width),
+        (x + px * half_width, y1, z + pz * half_width),
+        (x - px * half_width, y1, z - pz * half_width),
+    )
+
+
+def stage_pit_gates(stage_dir, aiw_path):
+    """Stage AMS1's required xpitin.gmt and xpitout.gmt trigger gates.
+
+    All 77 stock AMS1 tracks define Instance=xpitin and Instance=xpitout;
+    without them AMS1 logs 'No pit-in/pit-out poly found' and crashes when
+    spawning vehicles in the garage/pitlane.
+    """
+    import gmt_rf1
+
+    pit_wps = []
+    if aiw_path and os.path.isfile(aiw_path):
+        with open(aiw_path, encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+        blocks = txt.split("wp_pos=")[1:]
+        for blk in blocks:
+            if "wp_branchID=(1)" not in blk:
+                continue
+            pm = re.match(r"\(([-\d.]+),([-\d.]+),([-\d.]+)\)", blk)
+            rm = re.search(r"wp_perp=\(([-\d.]+),([-\d.]+),([-\d.]+)\)", blk)
+            if pm and rm:
+                pos = tuple(float(v) for v in pm.groups())
+                perp = tuple(float(v) for v in rm.groups())
+                pit_wps.append((pos, perp))
+
+    if len(pit_wps) >= 2:
+        in_pos, in_perp = pit_wps[0]
+        out_pos, out_perp = pit_wps[-1]
+    elif pit_wps:
+        in_pos, in_perp = pit_wps[0]
+        out_pos, out_perp = pit_wps[0]
+    else:
+        in_pos, in_perp = (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)
+        out_pos, out_perp = (0.0, 0.0, 10.0), (1.0, 0.0, 0.0)
+
+    blocks = []
+    for name, pos, perp in (("xpitin", in_pos, in_perp),
+                            ("xpitout", out_pos, out_perp)):
+        corners = _pit_gate_corners(pos, perp)
+        with open(os.path.join(stage_dir, name + ".gmt"), "wb") as f:
+            f.write(gmt_rf1.make_quad_rf1_gmt(name, corners, "_invisible.dds"))
+        blocks.append(
+            "Instance=%s\n"
+            "{\n"
+            "  Render=False Change=False VisGroups=(32)\n"
+            "  MeshFile=%s.gmt CollTarget=True HATTarget=False\n"
+            "  Response=VEHICLE,PITSTOP\n"
+            "}\n" % (name, name)
+        )
+    return blocks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", help="out/<track> from convert_track.py")
@@ -265,9 +431,9 @@ def main():
     # brightness, so both go up. The sun goes up further than the ambient:
     # lifting the two together flattens a scene, and AC's is the crisper of
     # the two, not merely the brighter.
-    ap.add_argument("--ambient", type=int, default=126,
+    ap.add_argument("--ambient", type=int, default=192,
                     help="scene ambient level, 0-255; lower if surfaces blow out")
-    ap.add_argument("--sun", type=int, default=220,
+    ap.add_argument("--sun", type=int, default=255,
                     help="directional light level, 0-255")
     ap.add_argument("--hour", default="12:00",
                     help="time of day for every session, e.g. 12:00")
@@ -335,11 +501,13 @@ def main():
     # them.
     exported.sort(key=lambda r: (bool(r.get("blend")), -float(r.get("radius", 0.0))))
 
+    skybox = stage_skybox(stage, args.install, venue)
     sx, sy, sz = sun_direction(out_dir)
     lines = [SCN_HEADER.format(venue=venue, layout=layout,
                                mas_files=mas_files,
                                amb=args.ambient, sun=args.sun,
-                               sx=sx, sy=sy, sz=sz)]
+                               sx=sx, sy=sy, sz=sz,
+                               skybox=skybox)]
     phys = 0
     for row in exported:
         name = os.path.splitext(row["gmt"])[0]
@@ -362,10 +530,25 @@ def main():
             lin = float(row.get("lod_in") or 0.0)
             lout = float(row.get("lod_out") or 0.0)
             extra = (" LODIn=(%.1f) LODOut=(%.1f)" % (lin, lout)) if lout > 0.0 else ""
+        if not invisible:
+            extra += " ShadowReceiver=True"
         if row.get("shadow") and not invisible:
-            extra += " ShadowCaster=(Static, %s)" % row["shadow"]
+            # AMS1/rF1 requires 4-argument ShadowCaster with shadow map size
+            # (width, height); 2-argument rF2 syntax crashes on shadow pass.
+            extra += " ShadowCaster=(Static, %s, 128, 128)" % row["shadow"]
+        if row.get("timing"):
+            lines.append(
+                "Instance=%s\n{\n"
+                "  Render=False Change=False VisGroups=(32)\n"
+                "  MeshFile=%s CollTarget=True HATTarget=False\n"
+                "  Response=VEHICLE,TIMING\n}\n"
+                % (name, row["gmt"])
+            )
+            continue
         lines.append("Instance=%s\n{\n  MeshFile=%s CollTarget=%s HATTarget=%s%s\n}\n"
                      % (name, row["gmt"], coll, hat, extra))
+    if not args.minimal:
+        lines.extend(stage_pit_gates(stage, aiw_src))
     write(os.path.join(lay_dir, layout + ".scn"), "\n".join(lines))
     write(os.path.join(lay_dir, layout + ".gdb"),
           GDB.format(venue=venue, layout=layout, km=lap_km,

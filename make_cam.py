@@ -14,13 +14,16 @@ import glob
 import argparse
 import configparser
 
-HEAD = "//[[gMa1.002f (c)2015    ]] [[ converted from Assetto Corsa ]]\n"
+HEAD = "//[[gMa1.002f (c)2007    ]] [[ converted from Assetto Corsa ]]\n"
 
 BODY = """TrackingCam={name}
 {{
+  Groups=15
+  Position=({px:.6f}, {py:.6f}, {pz:.6f})
+  Orientation=({pitch:.6f}, {yaw:.6f}, {roll:.6f})
   Fov=({fov_min:.6f}, {fov_max:.6f})
-  Clear=FALSE
-  Color=(0, 0, 0)
+  Clear=TRUE
+  Color=(145, 185, 230)
   ClipPlanes=({near:.6f}, {far:.6f})
   LODMultiplier=(6.000000)
   Size=(1.000000, 1.000000)
@@ -28,23 +31,14 @@ BODY = """TrackingCam={name}
   MipmapLODBias=(0.000000)
   Flags1=(1)
   Flags2=(0)
-  SoundName=""
-  SoundParams=(1.000,1,15)
-  MinShadowRange=(0.100)
-  MaxShadowRange=(450.000)
-  ShadowSplitRatio=(0.920)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,100.000)
-  ShadowParams=(0.000050,1.000,0.000)
-  ShadowParams=(0.000000,0.000,0.000)
-  Position=({px:.6f}, {py:.6f}, {pz:.6f})
-  Orientation=({pitch:.6f}, {yaw:.6f}, {roll:.6f})
   ActivationLocation=({ax:.6f}, {ay:.6f}, {az:.6f})
   ActivationRadius=({radius:.6f})
+  TrackingRate=(0.000000)
+  PositionOffset=(0.000000, 0.000000, 0.000000)
+  ListenerPos=(-3.402823e+038, -3.402823e+038, -3.402823e+038)
+  ListenerVol=(1.000000)
+  RainVol=(1.000000)
+  MovementRate=(0.000000)
 }}
 
 """

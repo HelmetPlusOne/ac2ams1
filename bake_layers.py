@@ -84,7 +84,8 @@ TARGET_DENSITY = 600.0
 # A tiled surface repeats its texture many times over, so a huge texture buys
 # almost nothing: the repeats already supply the granularity. Only surfaces
 # mapped once, where every texel lands somewhere unique, are worth the size.
-TILED_CAP = 3072
+# Power of two for AMS1 / DirectX 9.
+TILED_CAP = 2048
 
 
 # rF2's own cut-outs all carry one threshold. Every tree, shrub, crowd and

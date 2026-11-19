@@ -216,11 +216,18 @@ def main():
             unloadable.append(t + " (source DDS missing)")
             continue
         with open(source, "rb") as fh:
-            head = fh.read(20)
-        if head[:4] != b"DDS ":
+            head = fh.read(128)
+        if len(head) < 128 or head[:4] != b"DDS ":
             unloadable.append(t + " (not DDS)")
-        elif min(struct.unpack_from("<II", head, 12)) < 4:
-            unloadable.append(t + " (under 4x4)")
+        else:
+            h, w = struct.unpack_from("<II", head, 12)
+            fourcc = head[84:88]
+            if min(w, h) < 4:
+                unloadable.append(t + " (under 4x4)")
+            elif (w & (w - 1)) != 0 or (h & (h - 1)) != 0:
+                unloadable.append("%s (non-pow2 %dx%d)" % (t, w, h))
+            elif fourcc not in (b"DXT1", b"DXT3", b"DXT5"):
+                unloadable.append("%s (format %r)" % (t, fourcc))
     if unloadable:
         problems.append("textures AMS1 cannot load: %s" % unloadable[:5])
 

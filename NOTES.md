@@ -16,15 +16,25 @@ GSC/AMS1 signature and verifies the resulting header before installation.
 
 ## GMT format version
 
-After decryption, all 198 Targa GMTs from exporter 24.3.9 had bytes
-`20 00 00 04` at offsets 4-7 (for example `1GRASS0.gmt` and `xfinish.gmt`).
-Three stock AMS1 samples (`DeLaSarthe\gmt\XFINISH.GMT`,
-`PerthStreetCircuit\PerthReverse\xfinish.gmt`, and
-`2014Kyalami\SRPL_SKY3_DOME1.GMT`) instead had `20 00 00 00` at those offsets.
-The AMS1 converter now changes only this measured exporter format word before
-encryption. Existing AMS1-format GMTs pass through unchanged, and unknown words
-fail explicitly. The outer GSC encryption signature was valid already; it was
-separate from this internal GMT-version mismatch.
+Blender's `io_rf2_gmt_release` (24.3.9) exports rFactor 2 GMT v2.52
+(`GMOTOR_GMT_2.52\0` encoded at offset `0x1BC`, 884-byte header, 156-byte mesh
+descriptors, interleaved 96-byte `TVertex2` vertices, single-level materials
+with 180-byte textures). Stock AMS1 tracks instead use rFactor 1 / gMotor 2.0
+GMT v2.20 (`GMOTOR_GMT_2.20\0` encoded at offset `0x1D4`, 740-byte header,
+132-byte mesh descriptors, split 32-byte `TVertex` / 32-byte `TexturesUV` /
+optional 24-byte `UVTangents` arrays, and 3-level `L0`/`L1`/`L2` materials with
+172-byte textures).
+
+Patching only header bytes 4–7 from `20 00 00 04` to `20 00 00 00` left the
+file in rF2 v2.52 layout, causing AMS1 to read zeros at `0x1D4` and abort with
+`Wrong GMT version or GMT version not allowed`. `gmt_rf1.py` (invoked by
+`ams_crypt._prepare_gmt_for_ams1` before encryption) now performs a full binary
+conversion from rF2 GMT v2.52 to AMS1 GMT v2.20, sets mesh tangent flag `0x04`
+and emits `UVTangents` for bump-mapped shaders, strips the rF2-only material
+bit `0x2000`, and maps rF2's `L2BUMPSPECMAPT0XT1` (absent from AMS1's
+`coreshaders.mas`) to AMS1's `L2BUMPSPECMAPT0MULT1CUSTOM` with reordered
+texture stages and permuted vertex UV channels. Existing rF1 GMT v2.20 files
+pass through unchanged; unknown formats fail explicitly.
 
 ## Location structure and terrain
 

@@ -8,7 +8,82 @@ from unittest import mock
 
 import ams_crypt
 import finalize_track
+import gmt_rf1
 import verify_install
+
+
+def _make_rf2_gmt(name="mesh", shader="L2DIFFUSET0", textures=None,
+                  mat_flags=0x68902003, blend=(2, 1)):
+    """Build a minimal valid rF2 GMT v2.52 binary with 1 triangle (3 verts)."""
+    if textures is None:
+        textures = [("base.dds", 0x18, 1, 3, 0, 0)]
+
+    nmesh = 1
+    nface = 1
+    nnorm = 1
+    vcount = 3
+    tcount = 3
+
+    out = bytearray(gmt_rf1.RF2_HEADER_SIZE)
+    struct.pack_into("<I", out, 4, 0x04000020)
+    struct.pack_into("<3f", out, 0x0C8, -1.0, 0.0, -2.0)
+    struct.pack_into("<3f", out, 0x0D4, 1.0, 3.0, 2.0)
+    struct.pack_into("<f", out, 0x0E0, 5.0)
+    struct.pack_into("<3f", out, 0x0E4, 0.0, 1.5, 0.0)
+    struct.pack_into("<3f", out, 0x0F0, 0.0, 1.5, 0.0)
+    struct.pack_into("<2f", out, 0x100, 0.0, 13000.0)
+    out[0x17C:0x1BC] = gmt_rf1._pad_ascii(name, 64)
+    out[0x1BC:0x1CC] = gmt_rf1.RF2_GMT_MAGIC
+
+    moff = len(out)
+    mesh = bytearray(gmt_rf1.RF2_MESH_SIZE)
+    struct.pack_into("<10I", mesh, 0, 0x20004011, vcount, 0, tcount, 0, 0, 0, 0, 0, 0)
+    out.extend(mesh)
+
+    foff = len(out)
+    out.extend(struct.pack("<4H2I4f", 0, 1, 2, 4, 0, 0, 0.0, 0.0, 0.0, 1.0))
+
+    noff = len(out)
+    out.extend(struct.pack("<3fI", 0.0, 1.0, 0.0, 1))
+
+    voff = len(out)
+    for vi in range(vcount):
+        v = bytearray(gmt_rf1.RF2_VERTEX_SIZE)
+        struct.pack_into("<6fI", v, 0, float(vi), 1.0, 2.0, 0.0, 1.0, 0.0, 0xFFFFFFFF)
+        struct.pack_into("<6f", v, 40, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        # Distinct UVs per channel so permutation is verifiable.
+        struct.pack_into("<8f", v, 64,
+                         0.1 + vi, 0.2,   # UV0
+                         1.1 + vi, 1.2,   # UV1
+                         2.1 + vi, 2.2,   # UV2
+                         3.1 + vi, 3.2)   # UV3
+        out.extend(v)
+
+    toff = len(out)
+    out.extend(struct.pack("<3H", 0, 1, 2))
+
+    mat_off = len(out)
+    out.extend(struct.pack("<I", 1))
+    mat = bytearray(gmt_rf1.RF2_MAT_HEADER_SIZE)
+    mat[0:64] = gmt_rf1._pad_ascii("mat0", 64)
+    struct.pack_into("<I", mat, 64, mat_flags)
+    struct.pack_into("<16f", mat, 68, *([0.5, 0.5, 0.5, 1.0] * 4))
+    struct.pack_into("<2If", mat, 132, blend[0], blend[1], 10.0)
+    mat[148:212] = gmt_rf1._pad_ascii(shader, 64)
+    struct.pack_into("<I", mat, 256, len(textures))
+    out.extend(mat)
+    for tname, tflags, actor, action, stage, aref in textures:
+        tex = bytearray(gmt_rf1.RF2_TEXTURE_SIZE)
+        tex[0:64] = gmt_rf1._pad_ascii(tname, 64)
+        struct.pack_into("<IiIIIfI", tex, 64, tflags, -1, 1, actor, action, 1.0, stage)
+        struct.pack_into("<I", tex, 100, aref)
+        out.extend(tex)
+
+    struct.pack_into("<I", out, 0, mat_off - 4)
+    struct.pack_into("<12I", out, 0x13C,
+                     vcount, voff - 4, tcount, toff - 4,
+                     nmesh, moff - 4, nface, foff - 4, nnorm, noff - 4, 0, voff - 4)
+    return bytes(out)
 
 
 class AmsCryptTests(unittest.TestCase):
@@ -42,7 +117,7 @@ class AmsCryptTests(unittest.TestCase):
             dds = os.path.join(root, "map.dds")
             tga = os.path.join(root, "unwrapped.tga")
             with open(gmt, "wb") as f:
-                f.write(b"\x00" * 4 + b"\x20\x00\x00\x04" + b"mesh-body")
+                f.write(_make_rf2_gmt("mesh"))
             for path in (dds, tga):
                 with open(path, "wb") as f:
                     f.write(b"asset")
@@ -57,33 +132,81 @@ class AmsCryptTests(unittest.TestCase):
                              (ams_crypt.AMS_SIGNATURE, ams_crypt.AMS_KEY))
             with open(gmt, "rb") as f:
                 encrypted_gmt = f.read()
-            self.assertEqual(encrypted_gmt[16:24],
-                             b"\x00" * 4 + b"\x20\x00\x00\x00")
-            self.assertEqual(encrypted_gmt[24:], b"mesh-body")
+            body = encrypted_gmt[16:]
+            self.assertTrue(gmt_rf1.is_rf1_gmt(body))
+            self.assertEqual(body[4:8], b"\x20\x00\x00\x00")
             with open(tga, "rb") as f:
                 self.assertEqual(f.read(), b"asset")
 
-    def test_prepares_only_known_gmt_format_words_for_ams1(self):
+    def test_converts_rf2_gmt_to_ams1_rf1_layout_and_rejects_unknown(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "mesh.gmt")
-            body = b"\x00" * 4 + b"\x20\x00\x00\x04" + b"mesh"
             with open(path, "wb") as f:
-                f.write(body)
+                f.write(_make_rf2_gmt(
+                    "1GRASS0",
+                    shader="L2BUMPSPECMAPT0XT1",
+                    textures=[
+                        ("base.dds", 0x18, 1, 3, 0, 0),
+                        ("detail.dds", 0x18, 1, 3, 1, 0),
+                        ("spec.dds", 0x18, 2, 4, 2, 0),
+                        ("bump.dds", 0x18, 5, 4, 3, 0),
+                    ],
+                ))
 
             ams_crypt._prepare_gmt_for_ams1(path)
             with open(path, "rb") as f:
                 prepared = f.read()
-            self.assertEqual(prepared,
-                             b"\x00" * 4 + b"\x20\x00\x00\x00" + b"mesh")
+            self.assertTrue(gmt_rf1.is_rf1_gmt(prepared))
+            self.assertEqual(prepared[0x194:0x19B], b"1GRASS0")
+            # Bump-mapped mesh sets tangent bit 0x04 and emits tangents.
+            mflags = struct.unpack_from("<I", prepared, gmt_rf1.RF1_HEADER_SIZE)[0]
+            self.assertEqual(mflags, 0x20004015)
+            uv_off = struct.unpack_from("<I", prepared, gmt_rf1.RF1_HEADER_SIZE + 12)[0] + 4
+            tan_off = struct.unpack_from("<I", prepared, gmt_rf1.RF1_HEADER_SIZE + 20)[0] + 4
+            self.assertGreater(tan_off, uv_off)
+            # UVs permuted from (base=0, detail=1, spec=2, bump=3) to (base=0, spec=2, bump=3, detail=1).
+            uv0 = struct.unpack_from("<8f", prepared, uv_off)
+            self.assertAlmostEqual(uv0[0], 0.1, places=5)
+            self.assertAlmostEqual(uv0[2], 2.1, places=5)
+            self.assertAlmostEqual(uv0[4], 3.1, places=5)
+            self.assertAlmostEqual(uv0[6], 1.1, places=5)
+            # L2 shader mapped to AMS1's L2BUMPSPECMAPT0MULT1CUSTOM.
+            mat_off = struct.unpack_from("<I", prepared, 0)[0] + 4
+            mflags_mat = struct.unpack_from("<I", prepared, mat_off + 4 + 64)[0]
+            self.assertEqual(mflags_mat, 0x68900003)
+            l2_shader = prepared[mat_off + 4 + 144 + 2 * 264 + 8:
+                                 mat_off + 4 + 144 + 2 * 264 + 72].split(b"\x00", 1)[0]
+            self.assertEqual(l2_shader, b"L2BUMPSPECMAPT0MULT1CUSTOM")
 
+            # Idempotent on already-converted rF1 GMT v2.20.
             ams_crypt._prepare_gmt_for_ams1(path)
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), prepared)
 
+            # Reject unknown GMT version.
             with open(path, "wb") as f:
-                f.write(b"\x00" * 4 + b"\x20\x00\x00\x03")
-            with self.assertRaisesRegex(RuntimeError, "unsupported GMT format word"):
+                f.write(b"\x00" * 512)
+            with self.assertRaisesRegex(RuntimeError, "unsupported GMT version"):
                 ams_crypt._prepare_gmt_for_ams1(path)
+
+    def test_preserves_alpha_reference_and_numpy_fallback_parity(self):
+        rf2 = _make_rf2_gmt(
+            "fence",
+            shader="L2BUMPSPECMAPT0",
+            textures=[
+                ("fence.dds", 0x88, 1, 3, 0, 191),
+                ("_flat_spec.dds", 0x08, 2, 4, 1, 0),
+                ("_flat_nm.dds", 0x08, 5, 4, 2, 0),
+            ],
+        )
+        fast = gmt_rf1.convert_rf2_to_rf1(rf2)
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure = gmt_rf1.convert_rf2_to_rf1(rf2)
+        self.assertEqual(fast, pure)
+        # Verify ColorKey alpha reference 191 survived on all 3 shader levels' diffuse texture.
+        mat_off = struct.unpack_from("<I", fast, 0)[0] + 4
+        tex0_off = mat_off + 4 + 144 + 3 * 264 + 32 + 4
+        self.assertEqual(struct.unpack_from("<I", fast, tex0_off + 100)[0], 191)
 
     def test_encrypts_with_standalone_tool_when_package_is_unavailable(self):
         def run(command, **_kwargs):
@@ -98,7 +221,7 @@ class AmsCryptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "mesh.gmt")
             with open(path, "wb") as f:
-                f.write(b"\x00" * 4 + b"\x20\x00\x00\x04" + b"mesh")
+                f.write(_make_rf2_gmt("mesh"))
 
             with mock.patch.object(ams_crypt, "_library", return_value=None), \
                     mock.patch.object(ams_crypt, "_encryptor",

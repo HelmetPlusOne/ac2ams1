@@ -4,30 +4,17 @@ import shutil
 import struct
 import subprocess
 
+import gmt_rf1
+
 AMS_SIGNATURE = 0x4B1DCA9F960524E8
 AMS_KEY = 1
 ASSET_EXTENSIONS = {".dds", ".gmt"}
 MAX_COMMAND_CHARS = 28000
-GMT_FORMAT_OFFSET = 4
-AMS_GMT_FORMAT = b"\x20\x00\x00\x00"
-RF2_GMT_FORMAT = b"\x20\x00\x00\x04"
 
 
 def _prepare_gmt_for_ams1(path):
-    with open(path, "r+b") as f:
-        header = f.read(GMT_FORMAT_OFFSET + len(AMS_GMT_FORMAT))
-        if len(header) < GMT_FORMAT_OFFSET + len(AMS_GMT_FORMAT):
-            raise RuntimeError("GMT file is too short to contain its format word: %s"
-                               % path)
-        format_word = header[GMT_FORMAT_OFFSET:]
-        if format_word == AMS_GMT_FORMAT:
-            return
-        if format_word != RF2_GMT_FORMAT:
-            value = " ".join("%02x" % b for b in format_word)
-            raise RuntimeError("unsupported GMT format word %s in %s"
-                               % (value, path))
-        f.seek(GMT_FORMAT_OFFSET)
-        f.write(AMS_GMT_FORMAT)
+    """Convert rF2 GMT v2.52 exports to AMS1/rF1 GMT v2.20 before encryption."""
+    gmt_rf1.convert_file(path)
 
 
 def _library():
@@ -100,22 +87,28 @@ def encrypt_assets(root):
                 files.append(os.path.join(folder, name))
 
     files.sort()
-    for path in files:
-        if os.path.splitext(path)[1].lower() == ".gmt":
-            _prepare_gmt_for_ams1(path)
-
-    if tools is None:
-        executable = _encryptor()
-        if executable is None:
-            raise RuntimeError(
-                "AMS1 encryption requires rfactortools or its rfactorcrypt executable")
-        _encrypt_with_executable(files, executable)
-    else:
-        for path in files:
-            tools.encrypt_file(path, path, AMS_KEY, AMS_SIGNATURE)
-
+    to_encrypt = []
     for path in files:
         signature, key = crypt_info(path)
-        if signature != AMS_SIGNATURE or key != AMS_KEY:
+        if signature == AMS_SIGNATURE:
+            continue
+        if os.path.splitext(path)[1].lower() == ".gmt":
+            _prepare_gmt_for_ams1(path)
+        to_encrypt.append(path)
+
+    if to_encrypt:
+        if tools is None:
+            executable = _encryptor()
+            if executable is None:
+                raise RuntimeError(
+                    "AMS1 encryption requires rfactortools or its rfactorcrypt executable")
+            _encrypt_with_executable(to_encrypt, executable)
+        else:
+            for path in to_encrypt:
+                tools.encrypt_file(path, path, AMS_KEY, AMS_SIGNATURE)
+
+    for path in files:
+        signature, _key = crypt_info(path)
+        if signature != AMS_SIGNATURE:
             raise RuntimeError("AMS encryption verification failed for %s" % path)
     return len(files)

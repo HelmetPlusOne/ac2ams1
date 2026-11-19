@@ -1009,23 +1009,18 @@ def build(track_dir, out_path, layout):
                        for p, y, _nm in (starts[i % len(starts)]
                                          for i in range(len(pit_boxes)))]
         print("garages: at AC's start spots (%d)" % len(starts))
-    total_wp = len(wps) + (len(pl["lane"]) + 2 * len(pl["boxes"]) if pl else 0)
+    total_wp = len(wps) + (len(pl["lane"]) + len(pl["boxes"]) if pl else 0)
     grid_path_offsets, start_wp = start_grid_path_offsets(wps, starts)
 
     L = []
     a = L.append
-    a("//[[gMa1.002f (c)2015    ]] [[ generated from Assetto Corsa ]]")
+    a("//[[gMa1.002f (c)2007    ]] [[ generated from Assetto Corsa ]]")
     a("[Features]")
     a("pitlanes=%d" % (1 if pl else 0))
     a("startinggrid=%d" % max(1, len(starts)))
     a("pitspots=%d" % max(1, len(pit_boxes)))
-    a("garagespots=1")
-    a("auxspots=0")
-    a("acceptabledriverlinenoise=1.000000")
-    a("StartingStretch=20.000000")
-    for pname in ("FASTEST", "LEFT", "RIGHT"):
-        a("definepath=%s" % pname)
-        a("pathtime=%.4f" % (length / 25.0))
+    a("garagespots=3")
+    a("auxspots=2")
     a("")
 
     def spots(tag, items):
@@ -1040,80 +1035,109 @@ def build(track_dir, out_path, layout):
     spots("ALTGRID", starts)
     spots("TELEPORT", starts)
 
-    # Every car needs a pit box and a garage on a real pit lane. Without them
-    # rF2 red flags the whole field for "Exiting Pits Under Red" and aborts on
-    # entering the world.
+    # AMS1 expects 3 garage spots per team (garagespots=3).
     a("[PITS]")
     for i, (bx, by, bz, byaw) in enumerate(pit_boxes):
         gx, gy, gz, gyaw = pit_garages[i]
         a("TeamIndex=%d" % i)
         a("PitPos=(%.3f,%.3f,%.3f)" % (bx, by, bz))
         a("PitOri=(0.000,%.3f,0.000)" % face_out(byaw))
-        a("GarPos=(0,%.3f,%.3f,%.3f)" % (gx, gy, gz))
-        a("GarOri=(0,0.000,%.3f,0.000)" % face_out(gyaw))
+        for gslot in range(3):
+            a("GarPos=(%d,%.3f,%.3f,%.3f)" % (gslot, gx, gy, gz))
+            a("GarOri=(%d,0.000,%.3f,0.000)" % (gslot, face_out(gyaw)))
     a("")
 
+    # AMS1 spawns the pace/safety car at [AUX] LocationIndex=0 / 1.
+    if pit_boxes:
+        ax0, ay0, az0, ayaw0 = pit_boxes[0]
+    elif starts:
+        (ax0, ay0, az0), ayaw0, _ = starts[0]
+    else:
+        ax0, ay0, az0, ayaw0 = wps[0][0], wps[0][1], wps[0][2], 0.0
+    a("[AUX]")
+    for idx in range(2):
+        a("LocationIndex=%d" % idx)
+        a("Pos=(%.3f,%.3f,%.3f)" % (ax0, ay0, az0))
+        a("Ori=(0.000,%.3f,0.000)" % face_out(ayaw0))
+    a("")
+
+    lap_time = length / 25.0
     a("[Waypoint]")
     a("trackstate=4507")
     a("drivinglines=1")
-    a("autogengridf=(0.0,11.00)")
-    a("autogenaltgridf=(1.0,8.00)")
-    a("number_waypoints=%d" % total_wp)
+    a("autogengrid=(-1,13)")
+    a("autogenaltgrid=(-1,13)")
     a("teleportwp=(%d)" % start_wp)
     if pl:
         a("pitlanepaths=(1,1)")
+    a("times=(%.4f,340282346638528860000000000000000000000.0000)" % lap_time)
+    a("multilinetimes=(%.4f,340282346638528860000000000000000000000.0000)" % lap_time)
+    a("number_waypoints=%d" % total_wp)
     a("lap_length=%.6f" % length)
     a("sector_1_length=%.6f" % (length / SECTORS))
     a("sector_2_length=%.6f" % (length * 2 / SECTORS))
     a("LeftHandedPits=%d" % (1 if pl and pl["side"] < 0 else 0))
+    a("FuelUse=55000.000000")
     a("AIBrakingStiffness=(1.0000,1.0000,0.9000)")
     a("LaneSpacing=%.2f" % LANE_SPACING)
-    a("AIRange=(0.1000)")
-    a("AISpec=(0.0000,0.0000,1.0000,0.0000)")
+    a("GrooveWidth=4.500000")
+    a("GrooveWidthWet=4.000000")
+    a("IntermediateFogLevel=(0.1250)")
+    a("IntermediateFogPlanes=(175.0,675.0)")
+    a("RainyFogPlanes=(0.0,150.0)")
+    a("IntermediateFogColor=(191.3,191.3,191.3)")
+    a("RainyFogColor=(127.5,127.5,127.5)")
+    a("FogDensity=(0.00125,0.01000)")
+    a("RainyDarkness=(0.50000,0.00000)")
+    a("GarageDepth=(3.5000)")
+    a("WorstTime=(0.0000)")
+    a("MidTime=(0.0000)")
+    a("BestTime=(0.0000)")
+    a("WorstAdjust=(0.8000)")
+    a("MidAdjust=(1.0000)")
+    a("BestAdjust=(1.2000)")
 
     dist = 0.0
     for i in range(n):
         x, y, z, half = wps[i]
-        nx, _, nz, _ = wps[(i + 1) % n]
-        fx, fz = nx - x, nz - z
-        flen = math.hypot(fx, fz) or 1.0
-        fx, fz = fx / flen, fz / flen
+        nx, ny, nz, _ = wps[(i + 1) % n]
+        vx, vy, vz = nx - x, ny - y, nz - z
+        flen = math.hypot(vx, vz) or 1.0
+        fx, fz = vx / flen, vz / flen
         # normal is up on a flat surface, perp is normal x forward
         px, pz = -fz, fx
-        yaw = math.atan2(fx, fz)
         half = max(4.0, min(half, 15.0))
+        lane_left, lane_right = grid_path_offsets[i]
 
         a("wp_pos=(%.4f,%.4f,%.4f)" % (x, y, z))
         a("wp_perp=(%.4f,0.0000,%.4f)" % (px, pz))
         a("wp_normal=(0.0000,1.0000,0.0000)")
-        # rF2 wants three driving lines per waypoint. With one it logs
-        # "less than 3 paths defined" and patches in defaults.
-        lane_left, lane_right = grid_path_offsets[i]
-        for pi, off in ((0, 0.0), (1, lane_left), (2, lane_right)):
-            a("wp_pathinfo2=(%d,%.4f,-1.0000,-1.0000)" % (pi, off))
-            a("wp_oriantation=(%d,0.0000,%.4f,0.0000)" % (pi, yaw))
-            a("wp_pathflags=(%d,0)" % pi)
+        a("wp_vect=(%.4f,%.4f,%.4f)" % (vx, vy, vz))
         a("wp_width=(%.3f,%.3f,%.3f,%.3f)" %
           (half, half, half + AI_BOUNDARY_MARGIN, half + AI_BOUNDARY_MARGIN))
         a("wp_dwidth=(%.3f,%.3f,0.000,0.000)" %
           (half + AI_BOUNDARY_MARGIN, half + AI_BOUNDARY_MARGIN))
+        a("wp_path=(0.0000,0.0000)")
         a("wp_lockedAlpha=(0)")
+        a("wp_galpha=(0.0000)")
+        a("wp_groove_lat=(0.000000)")
         a("wp_test_speed=(25.000000)")
-        a("wp_reverb=(0)")
         sector = min(SECTORS - 1, int(dist / (length / SECTORS)))
         a("wp_score=(%d,%.3f)" % (sector, dist))
+        a("wp_cheat=(25.0000)")
         a("wp_wpse=(0,0)")
         a("wp_branchID=(0)")
         a("wp_bitfields=(0)")
+        a("wp_lockedLats=(0)")
+        a("wp_multipathlat=(%.4f, %.4f)" % (lane_left, lane_right))
         a("wp_pitlane=(%d)" % (1 if pl and i == pl["entry"] else 0))
         if pl and i == pl["entry"]:
             a("WP_PTRS=(%d,%d,%d,1)" % ((i - 1) % n, (i + 1) % n, n))
         else:
             a("WP_PTRS=(%d,%d,-1,0)" % ((i - 1) % n, (i + 1) % n))
-        dist += math.hypot(nx - x, nz - z)
+        dist += math.hypot(vx, vz)
 
-    # pit lane, as branch 1: it leaves the main path at the entry waypoint and
-    # rejoins it at the exit
+    # Pit lane as branch 1: leaves the main path at entry and rejoins at exit.
     if pl:
         lane = pl["lane"]
         m = len(lane)
@@ -1122,60 +1146,64 @@ def build(track_dir, out_path, layout):
             px, pz = -fz, fx
             prev = pl["entry"] if j == 0 else n + j - 1
             nxt = pl["exit"] if j == m - 1 else n + j + 1
+            if j < m - 1:
+                nx_, ny_, nz_, _ = lane[j + 1]
+            else:
+                nx_, ny_, nz_, _ = wps[pl["exit"]]
+            vx, vy, vz = nx_ - x, ny_ - y, nz_ - z
             a("wp_pos=(%.4f,%.4f,%.4f)" % (x, y, z))
             a("wp_perp=(%.4f,0.0000,%.4f)" % (px, pz))
             a("wp_normal=(0.0000,1.0000,0.0000)")
-            for pi, off in ((0, 0.0), (1, -1.5), (2, 1.5)):
-                a("wp_pathinfo2=(%d,%.4f,-1.0000,-1.0000)" % (pi, off))
-                a("wp_oriantation=(%d,0.0000,%.4f,0.0000)" % (pi, yaw))
-                a("wp_pathflags=(%d,0)" % pi)
+            a("wp_vect=(%.4f,%.4f,%.4f)" % (vx, vy, vz))
             a("wp_width=(4.000,4.000,6.000,6.000)")
             a("wp_dwidth=(6.000,6.000,0.000,0.000)")
+            a("wp_path=(0.0000,0.0000)")
             a("wp_lockedAlpha=(0)")
-            a("wp_test_speed=(-1.000000)")
-            a("wp_reverb=(0)")
+            a("wp_galpha=(0.0000)")
+            a("wp_groove_lat=(0.000000)")
+            a("wp_test_speed=(15.000000)")
             a("wp_score=(0,%.3f)" % (j * 5.0))
+            a("wp_cheat=(15.0000)")
             a("wp_wpse=(0,0)")
             a("wp_branchID=(1)")
             a("wp_bitfields=(0)")
+            a("wp_lockedLats=(0)")
+            a("wp_multipathlat=(-1.5000, 1.5000)")
             a("wp_pitlane=(1)")
             a("WP_PTRS=(%d,%d,-1,0)" % (prev, nxt))
 
-        # Pit boxes need waypoints of their own, separate from the [PITS] list.
-        # Without them rF2 logs "No pit box waypoints found", cannot seat the
-        # cars, and aborts. Each box is a two waypoint stub hanging off the
-        # nearest pit lane point: an approach, then the box itself.
+        # Pit box waypoints in AMS1/rF1 use branchID >= 106 (never 0 or 1,
+        # which belong to the main track and pitlane) and link back onto the
+        # pitlane via the third pointer.
         base = n + m
         for bi, (bx, by, bz, byaw) in enumerate(pl["boxes"]):
             near = min(range(m), key=lambda j: (lane[j][0] - bx) ** 2
                                                + (lane[j][2] - bz) ** 2)
-            lane_idx = n + near
-            appr = base + bi * 2
-            box = appr + 1
-            ax = (lane[near][0] + bx) / 2.0
-            az = (lane[near][2] + bz) / 2.0
-            for idx, (px_, py_, pz_, ptrs) in (
-                    (appr, (ax, by, az, (lane_idx, box))),
-                    (box, (bx, by, bz, (appr, box)))):
-                fx, fz = math.sin(byaw), math.cos(byaw)
-                a("wp_pos=(%.4f,%.4f,%.4f)" % (px_, py_, pz_))
-                a("wp_perp=(%.4f,0.0000,%.4f)" % (-fz, fx))
-                a("wp_normal=(0.0000,1.0000,0.0000)")
-                for pi in (0, 1, 2):
-                    a("wp_pathinfo2=(%d,0.0000,-1.0000,-1.0000)" % pi)
-                    a("wp_oriantation=(%d,0.0000,%.4f,0.0000)" % (pi, byaw))
-                    a("wp_pathflags=(%d,0)" % pi)
-                a("wp_width=(3.000,3.000,3.000,3.000)")
-                a("wp_dwidth=(3.000,3.000,0.000,0.000)")
-                a("wp_lockedAlpha=(0)")
-                a("wp_test_speed=(0.000000)")
-                a("wp_reverb=(0)")
-                a("wp_score=(0,0.000)")
-                a("wp_wpse=(0,0)")
-                a("wp_branchID=(%d)" % bi)
-                a("wp_bitfields=(1)")
-                a("wp_pitlane=(1)")
-                a("WP_PTRS=(%d,%d,-1,%d)" % (ptrs[0], ptrs[1], bi))
+            lane_in = n + max(0, near - 1)
+            lane_out = n + min(m - 1, near + 1)
+            box_idx = base + bi
+            bid = 106 + bi
+            fx, fz = math.sin(byaw), math.cos(byaw)
+            a("wp_pos=(%.4f,%.4f,%.4f)" % (bx, by, bz))
+            a("wp_perp=(%.4f,0.0000,%.4f)" % (-fz, fx))
+            a("wp_normal=(0.0000,1.0000,0.0000)")
+            a("wp_vect=(%.4f,0.0000,%.4f)" % (fx * 5.0, fz * 5.0))
+            a("wp_width=(3.000,3.000,3.000,3.000)")
+            a("wp_dwidth=(3.000,3.000,0.000,0.000)")
+            a("wp_path=(0.0000,0.0000)")
+            a("wp_lockedAlpha=(0)")
+            a("wp_galpha=(0.0000)")
+            a("wp_groove_lat=(0.000000)")
+            a("wp_test_speed=(0.000000)")
+            a("wp_score=(0,0.000)")
+            a("wp_cheat=(0.0000)")
+            a("wp_wpse=(0,0)")
+            a("wp_branchID=(%d)" % bid)
+            a("wp_bitfields=(1)")
+            a("wp_lockedLats=(0)")
+            a("wp_multipathlat=(0.0000, 0.0000)")
+            a("wp_pitlane=(1)")
+            a("WP_PTRS=(%d,%d,%d,%d)" % (lane_in, box_idx, lane_out, bid))
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")

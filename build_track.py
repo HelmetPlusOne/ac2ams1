@@ -23,6 +23,7 @@ from parallel import default_jobs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BLENDER = r"D:\Apps\Blender\blender.exe"
+ENCRYPTOR = r"D:\Mods\Automobilista\Tools\rfactortools-0.3.1.win32\rfactorcrypt.exe"
 
 
 def step(n, title):
@@ -206,7 +207,7 @@ def main():
                     help="adjusts converted material lighting coefficients")
     ap.add_argument("--diffuse", default="0.42")
     ap.add_argument("--ambient", default="0.30")
-    ap.add_argument("--scene-ambient", default="126")
+    ap.add_argument("--scene-ambient", default="192")
     ap.add_argument("--blender", default=BLENDER)
     ap.add_argument("--layout", default=None,
                     help="for a multi-layout track: the part after models_ in models_<layout>.ini")
@@ -223,7 +224,8 @@ def main():
     ap.add_argument("--texconv", default=None,
                     help="path to texconv.exe (defaults to the copy in rFactor 2)")
     ap.add_argument("--encryptor", default=None,
-                    help="path to rfactorcrypt.exe when rfactortools is not installed")
+                    help="path to rfactorcrypt.exe when rfactortools is not installed "
+                         "(defaults to AC2AMS_ENCRYPTOR or %s)" % ENCRYPTOR)
     args = ap.parse_args()
     # Every step is a process of its own that finds the games through
     # steam_paths, which reads these, so they are set before anything imports it.
@@ -233,8 +235,11 @@ def main():
         os.environ["AC2AMS_AC_DIR"] = os.path.abspath(args.ac)
     if args.texconv:
         os.environ["AC2AMS_TEXCONV"] = os.path.abspath(args.texconv)
-    if args.encryptor:
-        os.environ["AC2AMS_ENCRYPTOR"] = os.path.abspath(args.encryptor)
+    encryptor = args.encryptor or os.environ.get("AC2AMS_ENCRYPTOR")
+    if not encryptor and ENCRYPTOR and os.path.isfile(ENCRYPTOR):
+        encryptor = ENCRYPTOR
+    if encryptor:
+        os.environ["AC2AMS_ENCRYPTOR"] = os.path.abspath(encryptor)
     if args.install == "auto":
         import steam_paths
         args.install = steam_paths.LOCATIONS
