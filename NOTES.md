@@ -36,6 +36,15 @@ bit `0x2000`, and maps rF2's `L2BUMPSPECMAPT0XT1` (absent from AMS1's
 texture stages and permuted vertex UV channels. Existing rF1 GMT v2.20 files
 pass through unchanged; unknown formats fail explicitly.
 
+`io_rf2_gmt_release` also double-swaps Y and Z on collision `NormalData` and
+swaps Y (`2/3`) vs Z (`4/5`) in `FaceData.flags` (because `TPoint3D(X, Z, Y)`
+already swaps Y and Z before `AddXZYas021` swaps them again), giving flat road
+triangles horizontal `+Z` collision normals and flag `4` instead of upward `+Y`
+and flag `2`. Verified 100% against official ISI `Joesville` GMTs (`7842/7842`
+faces on `RaceSurface_01.gmt`), `gmt_rf1.py` now rebuilds `NormalData` and
+`FaceData.flags` directly from triangle vertex geometry (`-cross(p1-p0, p2-p0)`)
+during conversion, and generates double-sided `xpitin`/`xpitout` quads.
+
 ## Location structure and terrain
 
 AMS1's installed tracks place `<venue>.tdf` at the location root, with the

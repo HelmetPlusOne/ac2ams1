@@ -208,6 +208,35 @@ class AmsCryptTests(unittest.TestCase):
         tex0_off = mat_off + 4 + 144 + 3 * 264 + 32 + 4
         self.assertEqual(struct.unpack_from("<I", fast, tex0_off + 100)[0], 191)
 
+    def test_rebuilds_swapped_face_normals_and_dominant_axis_flags(self):
+        # Build a horizontal CW triangle whose true gMotor normal is (0, +1, 0)
+        # (dominant axis 2), but feed it io_rf2_gmt_release's double-swapped
+        # normal (0, 0, +1) and flag 4.
+        rf2 = bytearray(_make_rf2_gmt("road"))
+        (vcount, voff_rel, _tc, _to, _nm, _mo,
+         _nf, foff_rel, _nn, noff_rel, _bc, _bo) = struct.unpack_from("<12I", rf2, 0x13C)
+        voff, foff, noff = voff_rel + 4, foff_rel + 4, noff_rel + 4
+        pts = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        for vi, (x, y, z) in enumerate(pts):
+            struct.pack_into("<3f", rf2, voff + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
+        struct.pack_into("<H", rf2, foff + 6, 4)
+        struct.pack_into("<3fI", rf2, noff, 0.0, 0.0, 1.0, 7)
+
+        fast = gmt_rf1.convert_rf2_to_rf1(bytes(rf2))
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure = gmt_rf1.convert_rf2_to_rf1(bytes(rf2))
+        self.assertEqual(fast, pure)
+
+        _nm, _mo, nface, foff_r, nnorm, noff_r = struct.unpack_from("<6I", fast, 0x174)
+        self.assertEqual((nface, nnorm), (1, 1))
+        flg = struct.unpack_from("<H", fast, foff_r + 4 + 6)[0]
+        nx, ny, nz, sg = struct.unpack_from("<3fI", fast, noff_r + 4)
+        self.assertEqual(flg, 2)
+        self.assertEqual(sg, 7)
+        self.assertAlmostEqual(nx, 0.0, places=5)
+        self.assertAlmostEqual(ny, 1.0, places=5)
+        self.assertAlmostEqual(nz, 0.0, places=5)
+
     def test_encrypts_with_standalone_tool_when_package_is_unavailable(self):
         def run(command, **_kwargs):
             for path in command[6:]:

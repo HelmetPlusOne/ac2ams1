@@ -206,6 +206,129 @@ def _split_vertices(data, vert_offset_bytes, vert_count, uv_perm, need_tangents)
     return bytes(verts), bytes(uvs), (bytes(tangents) if need_tangents else None)
 
 
+def _dominant_axis_flag(nx, ny, nz):
+    """Return gMotor face dominant-axis code: 0/+X 1/-X 2/+Y 3/-Y 4/+Z 5/-Z."""
+    ax, ay, az = abs(nx), abs(ny), abs(nz)
+    if ax >= ay and ax >= az:
+        return 0 if nx >= 0.0 else 1
+    if ay >= ax and ay >= az:
+        return 2 if ny >= 0.0 else 3
+    return 4 if nz >= 0.0 else 5
+
+
+def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
+    """Rebuild rF1 FaceData dominant-axis flags and NormalData from vertex geometry.
+
+    Blender's io_rf2_gmt_release addon passes TPoint3D(X, Z, Y) normals through
+    AddXZYas021, double-swapping Y and Z in NormalData and swapping 2/3 vs 4/5
+    in FaceData.flags. On a flat road (true normal +Y, flag 2), that writes a
+    horizontal +Z normal with flag 4, causing AMS1's rigid-body collision solver
+    to shove cars sideways/backwards off the road.
+    """
+    if nface == 0:
+        return b"", b"", 0
+
+    if _np is not None:
+        verts_f32 = _np.frombuffer(
+            data, dtype="<f4", count=vcount * (RF2_VERTEX_SIZE // 4), offset=voff
+        ).reshape(vcount, RF2_VERTEX_SIZE // 4)
+        pos = verts_f32[:, :3].astype(_np.float64)
+
+        face_dt = _np.dtype([
+            ("v0", "<u2"), ("v1", "<u2"), ("v2", "<u2"), ("flg", "<u2"),
+            ("mesh", "<u4"), ("ni", "<u4"),
+            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("area", "<f4"),
+        ])
+        norm_dt = _np.dtype([
+            ("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4"), ("sg", "<u4"),
+        ])
+        in_faces = _np.frombuffer(data, dtype=face_dt, count=nface, offset=foff)
+        in_norms = (_np.frombuffer(data, dtype=norm_dt, count=nnorm, offset=noff)
+                    if nnorm > 0 else _np.zeros(0, dtype=norm_dt))
+
+        out_faces = in_faces.copy()
+        out_norms = _np.zeros(nface, dtype=norm_dt)
+
+        v0 = in_faces["v0"].astype(_np.int64)
+        v1 = in_faces["v1"].astype(_np.int64)
+        v2 = in_faces["v2"].astype(_np.int64)
+        valid_idx = (v0 < vcount) & (v1 < vcount) & (v2 < vcount)
+        sv0 = _np.where(valid_idx, v0, 0)
+        sv1 = _np.where(valid_idx, v1, 0)
+        sv2 = _np.where(valid_idx, v2, 0)
+
+        p0 = pos[sv0]
+        p1 = pos[sv1]
+        p2 = pos[sv2]
+        cross = -_np.cross(p1 - p0, p2 - p0)
+        lengths = _np.linalg.norm(cross, axis=1)
+        good = valid_idx & (lengths > 1e-12)
+
+        nx = _np.zeros(nface, dtype=_np.float64)
+        ny = _np.ones(nface, dtype=_np.float64)
+        nz = _np.zeros(nface, dtype=_np.float64)
+        sg = _np.zeros(nface, dtype=_np.uint32)
+
+        if nnorm > 0:
+            ni = in_faces["ni"].astype(_np.int64)
+            valid_ni = ni < nnorm
+            sni = _np.where(valid_ni, ni, 0)
+            sg = _np.where(valid_ni, in_norms["sg"][sni], 0)
+            nx = _np.where(valid_ni, in_norms["nx"][sni].astype(_np.float64), nx)
+            ny = _np.where(valid_ni, in_norms["ny"][sni].astype(_np.float64), ny)
+            nz = _np.where(valid_ni, in_norms["nz"][sni].astype(_np.float64), nz)
+
+        inv_len = _np.where(good, 1.0 / _np.where(good, lengths, 1.0), 0.0)
+        nx = _np.where(good, cross[:, 0] * inv_len, nx)
+        ny = _np.where(good, cross[:, 1] * inv_len, ny)
+        nz = _np.where(good, cross[:, 2] * inv_len, nz)
+
+        ax, ay, az = _np.abs(nx), _np.abs(ny), _np.abs(nz)
+        is_x = (ax >= ay) & (ax >= az)
+        is_y = (~is_x) & (ay >= ax) & (ay >= az)
+        flg = _np.where(
+            is_x,
+            _np.where(nx >= 0.0, 0, 1),
+            _np.where(is_y, _np.where(ny >= 0.0, 2, 3), _np.where(nz >= 0.0, 4, 5)),
+        ).astype(_np.uint16)
+
+        out_faces["flg"] = flg
+        out_faces["ni"] = _np.arange(nface, dtype=_np.uint32)
+        out_norms["nx"] = nx.astype(_np.float32)
+        out_norms["ny"] = ny.astype(_np.float32)
+        out_norms["nz"] = nz.astype(_np.float32)
+        out_norms["sg"] = sg
+        return out_faces.tobytes(), out_norms.tobytes(), nface
+
+    out_faces = bytearray(nface * FACE_SIZE)
+    out_norms = bytearray(nface * NORMAL_SIZE)
+    for fi in range(nface):
+        fpos = foff + fi * FACE_SIZE
+        v0, v1, v2, _flg, mesh_i, ni, cx, cy, cz, area = struct.unpack_from(
+            "<4H2I4f", data, fpos)
+        if ni < nnorm:
+            nx, ny, nz, sg = struct.unpack_from("<3fI", data, noff + ni * NORMAL_SIZE)
+        else:
+            nx, ny, nz, sg = 0.0, 1.0, 0.0, 0
+        if v0 < vcount and v1 < vcount and v2 < vcount:
+            p0 = struct.unpack_from("<3f", data, voff + v0 * RF2_VERTEX_SIZE)
+            p1 = struct.unpack_from("<3f", data, voff + v1 * RF2_VERTEX_SIZE)
+            p2 = struct.unpack_from("<3f", data, voff + v2 * RF2_VERTEX_SIZE)
+            ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
+            vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
+            tnx = -(uy * vz - uz * vy)
+            tny = -(uz * vx - ux * vz)
+            tnz = -(ux * vy - uy * vx)
+            length = (tnx * tnx + tny * tny + tnz * tnz) ** 0.5
+            if length > 1e-12:
+                nx, ny, nz = tnx / length, tny / length, tnz / length
+        flg = _dominant_axis_flag(nx, ny, nz)
+        struct.pack_into("<4H2I4f", out_faces, fi * FACE_SIZE,
+                         v0, v1, v2, flg, mesh_i, fi, cx, cy, cz, area)
+        struct.pack_into("<3fI", out_norms, fi * NORMAL_SIZE, nx, ny, nz, sg)
+    return bytes(out_faces), bytes(out_norms), nface
+
+
 def _bbox_corners(bbox_min, bbox_max):
     """Build the 8 bounding-box corners in rF1 bottom-then-top order."""
     x0, y0, z0 = bbox_min
@@ -341,11 +464,14 @@ def convert_rf2_to_rf1(data, label="GMT"):
     # Assemble rF1 GMT v2.20 binary.
     out = bytearray(RF1_HEADER_SIZE + nmesh * RF1_MESH_SIZE)
 
+    face_bytes, norm_bytes, out_nnorm = _rebuild_faces_and_normals(
+        data, voff, vcount, foff, nface, noff, nnorm)
+
     face_off = len(out)
-    out.extend(data[foff:foff + nface * FACE_SIZE])
+    out.extend(face_bytes)
 
     norm_off = len(out)
-    out.extend(data[noff:noff + nnorm * NORMAL_SIZE])
+    out.extend(norm_bytes)
 
     first_vert_off = None
     for mi, (m_flags, m_vcount, m_tcount, m_vstart, m_tstart, m_mat) in enumerate(meshes):
@@ -430,7 +556,7 @@ def convert_rf2_to_rf1(data, label="GMT"):
         RF1_HEADER_SIZE - 4,
         nface,
         face_off - 4,
-        nnorm,
+        out_nnorm,
         norm_off - 4,
         0,
         (first_vert_off - 4) if first_vert_off is not None else 0,
@@ -450,7 +576,7 @@ def make_minimal_rf1_gmt(name="skyboxi", texture="_invisible.dds"):
 
 
 def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
-    """Build a valid 2-triangle (4-vertex) AMS1/rF1 GMT v2.20 quad mesh."""
+    """Build a valid double-sided 4-triangle (8-vertex) AMS1/rF1 GMT v2.20 quad."""
     xs = [c[0] for c in corners]
     ys = [c[1] for c in corners]
     zs = [c[2] for c in corners]
@@ -460,34 +586,50 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
     dx, dy, dz = (b - a for a, b in zip(bmin, bmax))
     radius = max(1.0, 0.5 * (dx * dx + dy * dy + dz * dz) ** 0.5)
 
-    # Compute face normal from first triangle (c0, c1, c2).
-    u = (corners[1][0] - corners[0][0], corners[1][1] - corners[0][1], corners[1][2] - corners[0][2])
-    v = (corners[2][0] - corners[0][0], corners[2][1] - corners[0][1], corners[2][2] - corners[0][2])
-    nx = u[1] * v[2] - u[2] * v[1]
-    ny = u[2] * v[0] - u[0] * v[2]
-    nz = u[0] * v[1] - u[1] * v[0]
-    nlen = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
-    nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+    # Double-sided vertices: 0..3 front face, 4..7 back face (matching ISI xpitin/xpitout).
+    verts = list(corners) + list(corners)
+    tris = ((0, 1, 2), (0, 2, 3), (4, 6, 5), (4, 7, 6))
+
+    tri_info = []
+    for i0, i1, i2 in tris:
+        p0, p1, p2 = verts[i0], verts[i1], verts[i2]
+        ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
+        vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
+        nx = -(uy * vz - uz * vy)
+        ny = -(uz * vx - ux * vz)
+        nz = -(ux * vy - uy * vx)
+        nlen = (nx * nx + ny * ny + nz * nz) ** 0.5
+        if nlen > 1e-12:
+            nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+        else:
+            nx, ny, nz = 0.0, 1.0, 0.0
+        area = 0.5 * nlen
+        cx = (p0[0] + p1[0] + p2[0]) / 3.0
+        cy = (p0[1] + p1[1] + p2[1]) / 3.0
+        cz = (p0[2] + p1[2] + p2[2]) / 3.0
+        flg = _dominant_axis_flag(nx, ny, nz)
+        tri_info.append((i0, i1, i2, flg, cx, cy, cz, area, nx, ny, nz))
+
+    fn = tri_info[0][8:11]
+    bn = tri_info[2][8:11]
+    vnorms = [fn] * 4 + [bn] * 4
 
     out = bytearray(RF1_HEADER_SIZE + RF1_MESH_SIZE)
     face_off = len(out)
-    tris = ((0, 1, 2), (0, 2, 3))
-    for ti, (i0, i1, i2) in enumerate(tris):
-        cx = (corners[i0][0] + corners[i1][0] + corners[i2][0]) / 3.0
-        cy = (corners[i0][1] + corners[i1][1] + corners[i2][1]) / 3.0
-        cz = (corners[i0][2] + corners[i1][2] + corners[i2][2]) / 3.0
-        out.extend(struct.pack("<4H2I4f", i0, i1, i2, 5, 0, ti, cx, cy, cz, radius))
+    for ti, (i0, i1, i2, flg, cx, cy, cz, area, _nx, _ny, _nz) in enumerate(tri_info):
+        out.extend(struct.pack("<4H2I4f", i0, i1, i2, flg, 0, ti, cx, cy, cz, area))
     norm_off = len(out)
-    for _ in tris:
+    for _i0, _i1, _i2, _flg, _cx, _cy, _cz, _area, nx, ny, nz in tri_info:
         out.extend(struct.pack("<3fI", nx, ny, nz, 0))
     vert_off = len(out)
-    for vx, vy, vz in corners:
+    for (vx, vy, vz), (nx, ny, nz) in zip(verts, vnorms):
         out.extend(struct.pack("<6f2I", vx, vy, vz, nx, ny, nz, 0xFFFFFFFF, 0))
     uv_off = len(out)
-    for u_, v_ in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)):
+    for u_, v_ in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)) * 2:
         out.extend(struct.pack("<8f", u_, v_, u_, v_, u_, v_, u_, v_))
     tri_off = len(out)
-    out.extend(struct.pack("<6H", 0, 1, 2, 0, 2, 3))
+    for i0, i1, i2 in tris:
+        out.extend(struct.pack("<3H", i0, i1, i2))
     mat_off = len(out)
     out.extend(struct.pack("<I", 1))
     out.extend(_pad_ascii(name, 64))
@@ -509,7 +651,7 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
         out.extend(tb)
     struct.pack_into("<10I", out, RF1_HEADER_SIZE,
                      0x20004011, vert_off - 4, 0, uv_off - 4, 0, 0,
-                     4, 0, 6, tri_off - 4)
+                     8, 0, 12, tri_off - 4)
     struct.pack_into("<I", out, RF1_HEADER_SIZE + 0x4C, 0xFFFFFFFF)
     struct.pack_into("<2If", out, 0, mat_off - 4, RF1_GMT_FLAGS, radius)
     struct.pack_into("<24f", out, 0x00C, *_bbox_corners(bmin, bmax))
@@ -517,7 +659,7 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
     struct.pack_into("<3f", out, 0x0D8, *center)
     struct.pack_into("<2f", out, 0x0E4, 0.0, 2000.0)
     struct.pack_into("<8I", out, 0x174, 1, RF1_HEADER_SIZE - 4,
-                     2, face_off - 4, 2, norm_off - 4, 0, vert_off - 4)
+                     4, face_off - 4, 4, norm_off - 4, 0, vert_off - 4)
     out[0x194:0x1D4] = _pad_ascii(name, 64)
     out[0x1D4:0x1E4] = RF1_GMT_MAGIC
     return bytes(out)
