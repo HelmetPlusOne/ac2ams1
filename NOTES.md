@@ -72,9 +72,13 @@ already uses the wildcard-first pattern. Updated the installed Targa GDB to
 match it; the user reports that this alone did not make the track appear.
 
 The installed location has 249 GDB layouts. 248 have a matching
-`*_loading.jpg`, and 246 have a matching `*mini.tga`; Targa had neither. Its
-AC source does include `ui\preview.png` (551x320). The converter now uses that
-image, or falls back to `map.png`, to stage both AMS menu images.
+`*_loading.jpg` (predominantly 1920x1080 dark loading screens with a white
+track map), and 246 have a matching `*mini.tga` (predominantly 252x249 32-bit
+RGBA transparent track maps). Multi-layout AC tracks store their rasterized
+maps at `<layout>\map.png` and UI assets under `ui\<layout>\` rather than
+`<layout>\ui\`. The converter now prefers the layout's `map.png` (then
+`outline.png`, then `preview.png`), crops transparent margins, preserves aspect
+ratio, and composes both the 1920x1080 `*_loading.jpg` and 252x249 `*mini.tga`.
 
 Targa's GDB `TrackName` is 27 characters; installed stock values reach 38, so
 the displayed-name length is not an outlier. Before the scene fix, the full

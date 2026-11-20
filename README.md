@@ -27,8 +27,11 @@ instead of being silently rewritten. Install the Python package with
 it from source may require Microsoft C++ Build Tools. Alternatively, pass the
 standalone tool path with `--encryptor "<path to rfactorcrypt.exe>"`.
 
-When the AC track includes `ui\preview.png` or `map.png`, the converter also
-creates AMS1's layout thumbnail and loading-screen images.
+When the AC track includes a rasterized track map (`<layout>\map.png` or
+`map.png`), UI outline (`ui\<layout>\outline.png` or `ui\outline.png`), or
+preview (`ui\<layout>\preview.png` or `ui\preview.png`), the converter composes
+AMS1's 1920x1080 loading screen (`<layout>_loading.jpg`) and 252x249 transparent
+menu minimap (`<layout>mini.tga`).
 AMS1 limits scene filenames to 23 characters, including `.scn`; long layout
 identifiers are shortened consistently across the GDB, scene, AIW, camera, and
 layout filenames. If both `<venue>.mas` and `<venue>MAP.mas` are in
