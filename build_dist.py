@@ -12,7 +12,8 @@ Recreates ``dist/`` from scratch with:
   - ``data/ac/system/data/surfaces.ini``
   - ``data/ams1/GameData/Locations/terrain.tdf``
   - ``data/ams1/GameData/Locations/sky/SRPL_SKY3_{DOME1,SUN1}.GMT``
-  - ``out/`` (default automatic install destination for converted tracks)
+  - ``out/`` (default automatic install destination for converted tracks, with ``readme.txt``)
+  - ``work/`` (intermediate build workspace, with ``readme.txt``)
 
 Usage:
     python build_dist.py [--dist <output dir>]
@@ -49,6 +50,20 @@ HIDDEN_IMPORTS = (
     "steam_paths",
     "track_zip",
     "verify_install",
+)
+
+
+OUT_README = (
+    "Converted Automobilista 1 tracks are installed here automatically.\n"
+    "Copy any track folder from this directory into:\n"
+    "  <Automobilista>\\GameData\\Locations\\\n"
+)
+
+WORK_README = (
+    "Intermediate conversion files (extracted textures, baked layers, raw GMTs,\n"
+    "AIW/CAM files, and extracted track zips) are stored here during builds.\n"
+    "Subfolders here can be deleted safely after conversion, or kept to reuse\n"
+    "exported geometry with --skip-geometry.\n"
 )
 
 
@@ -263,12 +278,20 @@ def main(argv=None):
     for asset_name, asset_path in sky_sources.items():
         shutil.copy2(asset_path, os.path.join(ams_sky_dst, asset_name))
 
-    # 6. Copy standalone README.md and create default output install folder.
+    # 6. Copy standalone README.md and create out/ and work/ folders with readme.txt.
     dist_readme = os.path.join(HERE, "DIST_README.md")
     if not os.path.isfile(dist_readme):
         raise SystemExit("Required source missing (DIST_README.md): %s" % dist_readme)
     shutil.copy2(dist_readme, os.path.join(dist_dir, "README.md"))
-    os.makedirs(os.path.join(dist_dir, "out"), exist_ok=True)
+
+    out_dir = os.path.join(dist_dir, "out")
+    work_dir = os.path.join(dist_dir, "work")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(work_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "readme.txt"), "w", encoding="utf-8") as f:
+        f.write(OUT_README)
+    with open(os.path.join(work_dir, "readme.txt"), "w", encoding="utf-8") as f:
+        f.write(WORK_README)
 
     # 7. Bundle Python runtime + converter CLI into dist/ac2ams1.exe.
     exe_path = build_exe(dist_dir)

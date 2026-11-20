@@ -89,7 +89,42 @@ All tool and data paths are resolved relative to `ac2ams1.exe`:
 | `data\ams1\GameData\Locations\terrain.tdf` | AMS1 terrain template file patched with AC surface grip values. |
 | `data\ams1\GameData\Locations\sky\` | Stock AMS1 skybox meshes (`SRPL_SKY3_DOME1.GMT`, `SRPL_SKY3_SUN1.GMT`). |
 | `out\` | Ready-to-install AMS1 track folders produced by conversions. |
-| `work\` | Intermediate working files (extracted textures, baked layers, raw GMTs, AIW/CAM, extracted zips), created at runtime. |
+| `work\` | Intermediate working files (extracted textures, baked layers, raw GMTs, AIW/CAM, extracted zips). |
+
+## Licenses & Third-Party Notices
+
+This standalone bundle includes third-party tools and runtime libraries, each
+governed by its own license:
+
+| Component | Location | License & Source |
+| --- | --- | --- |
+| **Python 3.10** (and **Python 3.3** runtime in `rfactortools`) | `ac2ams1.exe`, `tools\rfactortools\` | **PSF License Version 2** — Python Software Foundation (https://docs.python.org/3/license.html) |
+| **NumPy** | `ac2ams1.exe` | **BSD 3-Clause License** — NumPy Developers (https://numpy.org/doc/stable/license.html) |
+| **PyInstaller Bootloader** | `ac2ams1.exe` | **GNU GPL v2 or later with Bootloader Exception** (https://pyinstaller.org/en/stable/license.html) |
+| **Blender 3.6 LTS** | `tools\blender\` | **GNU GPL v2 or later** (with GPL-3.0-compatible third-party libraries). Full license texts are included in `tools\blender\copyright.txt` and `tools\blender\license\` (see `THIRD-PARTY-LICENSES.txt`). Source: https://www.blender.org/ |
+| **rFactor 2 GMT Exporter (`io_rf2_gmt_release` v24.3.9)** | `tools\blender\3.6\scripts\addons\io_rf2_gmt_release\` | Authored by **rFactor2 IO Group** (distributed via the Studio-397 community forum: https://forum.studio-397.com/index.php?threads/blender-rfactor2-export-scripts.74821/). Shipped without a separate license file; check the author's terms before redistributing. |
+| **DirectXTex `texconv.exe`** | `tools\texconv\texconv.exe` | **MIT License** — Microsoft Corporation (https://github.com/microsoft/DirectXTex/blob/main/LICENSE). This copy was taken from rFactor 2's `Support\Tools\MapConverter\` folder and can also be obtained directly from Microsoft's DirectXTex GitHub releases. |
+| **rfactortools (`rfactorcrypt.exe`)** | `tools\rfactortools\` | **GNU GPL v3** — full license text included in `tools\rfactortools\COPYING.txt`. Source: https://github.com/Grumbel/rfactortools |
+
+This converter is based on the code from https://github.com/Mewzapchu/ac-to-rf2.
+
+## Included Game Files (Assetto Corsa & Automobilista 1)
+
+To allow standalone conversion on a Windows machine where Assetto Corsa and
+Automobilista 1 are not installed, the `data\` directory contains a small set
+of proprietary template files copied from local game installations:
+
+- **Assetto Corsa** (© Kunos Simulazioni):
+  - `data\ac\system\data\surfaces.ini` — default AC surface physics table.
+- **Automobilista 1** (© Reiza Studios):
+  - `data\ams1\GameData\Locations\terrain.tdf` — stock AMS1 terrain template.
+  - `data\ams1\GameData\Locations\sky\SRPL_SKY3_DOME1.GMT` and `SRPL_SKY3_SUN1.GMT` — stock AMS1 skybox meshes required by the scene loader.
+
+These files are **proprietary game assets**, not open-source software, and
+remain the property of their respective copyright holders. Do not redistribute
+this bundle publicly with those game files included; if sharing the converter,
+remove `data\` and have users supply those files from their own licensed
+installations of Assetto Corsa and Automobilista 1.
 
 ## Notes
 
