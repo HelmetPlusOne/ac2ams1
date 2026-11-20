@@ -31,6 +31,9 @@ def _encryptor():
     configured = os.environ.get("AC2AMS_ENCRYPTOR")
     if configured:
         return configured if os.path.isfile(configured) else None
+    import steam_paths
+    if steam_paths.ENCRYPTOR and os.path.isfile(steam_paths.ENCRYPTOR):
+        return steam_paths.ENCRYPTOR
     for name in ("rft-rfactorcrypt", "rft-rfactorcrypt.exe",
                  "rfactorcrypt", "rfactorcrypt.exe"):
         path = shutil.which(name)

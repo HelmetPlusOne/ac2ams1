@@ -6,8 +6,10 @@ import types
 import unittest
 from unittest import mock
 
+import ac2ams1
 import ams_crypt
 import build_track
+import convert_multiple_tracks
 import finalize_track
 import fix_textures
 import gmt_rf1
@@ -590,6 +592,118 @@ class AmsFinalizeTests(unittest.TestCase):
         self.assertEqual(fix_textures.target_size(4, 0.5), 4)
         self.assertEqual(fix_textures.target_size(4096, 1.0), 4096)
         self.assertEqual(fix_textures.target_size(600, 1.0), 1024)
+
+
+class ConvertMultipleTracksTests(unittest.TestCase):
+    def test_runs_all_lines_with_install_auto_and_skips_errors(self):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command[2].endswith("broken"):
+                return types.SimpleNamespace(returncode=1)
+            if command[2].endswith("oserror"):
+                raise OSError("boom")
+            return types.SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as root:
+            list_file = os.path.join(root, "tracks.txt")
+            with open(list_file, "w", encoding="utf-8-sig") as f:
+                f.write("\n")
+                f.write("# comment\n")
+                f.write(";orphan_layout\n")
+                f.write("C:\\tracks\\alpha;\n")
+                f.write("C:\\tracks\\broken;gp\n")
+                f.write("C:\\tracks\\oserror;west\n")
+                f.write("C:\\tracks\\beta;normal\n")
+                f.write("C:\\tracks\\gamma\n")
+
+            with mock.patch.object(convert_multiple_tracks.subprocess, "run",
+                                   side_effect=fake_run):
+                succeeded, skipped = convert_multiple_tracks.convert_file(list_file)
+
+            self.assertEqual(len(succeeded), 3)
+            self.assertEqual(len(skipped), 3)
+            self.assertEqual(
+                [c[2:] for c in calls],
+                [
+                    ["C:\\tracks\\alpha", "--install", "auto"],
+                    ["C:\\tracks\\broken", "--install", "auto", "--layout", "gp"],
+                    ["C:\\tracks\\oserror", "--install", "auto", "--layout", "west"],
+                    ["C:\\tracks\\beta", "--install", "auto", "--layout", "normal"],
+                    ["C:\\tracks\\gamma", "--install", "auto"],
+                ],
+            )
+
+
+class StandaloneCliTests(unittest.TestCase):
+    def test_cli_dispatches_build_track_and_convert_multiple_tracks(self):
+        seen = []
+
+        def fake_build():
+            seen.append(("build", list(sys.argv)))
+            return 0
+
+        def fake_batch():
+            seen.append(("batch", list(sys.argv)))
+            return 0
+
+        with mock.patch.object(build_track, "main", side_effect=fake_build), \
+                mock.patch.object(convert_multiple_tracks, "main", side_effect=fake_batch):
+            self.assertEqual(ac2ams1.main(["build_track", "C:\\track", "--hour", "10:00"]), 0)
+            self.assertEqual(ac2ams1.main(["convert_multiple_tracks", "tracks.txt"]), 0)
+            self.assertEqual(ac2ams1.main(["--stage", "build_track", "C:\\track2"]), 0)
+
+        self.assertEqual(seen[0][0], "build")
+        self.assertEqual(seen[0][1][1:], ["C:\\track", "--hour", "10:00"])
+        self.assertEqual(seen[1][0], "batch")
+        self.assertEqual(seen[1][1][1:], ["tracks.txt"])
+        self.assertEqual(seen[2][0], "build")
+        self.assertEqual(seen[2][1][1:], ["C:\\track2"])
+
+    def test_cli_stage_dispatch_handles_script_only_modules(self):
+        for stage in ("make_aiw", "make_cam"):
+            self.assertEqual(ac2ams1.main(["--stage", stage, "--help"]), 0)
+
+    def test_drag_and_drop_directory_and_batch_file(self):
+        seen = []
+
+        def fake_build():
+            seen.append(("build", list(sys.argv)))
+            return 0
+
+        def fake_batch():
+            seen.append(("batch", list(sys.argv)))
+            return 0
+
+        with tempfile.TemporaryDirectory() as root:
+            single_track = os.path.join(root, "targa")
+            multi_track = os.path.join(root, "nords")
+            batch_file = os.path.join(root, "tracks.txt")
+            os.makedirs(single_track)
+            os.makedirs(multi_track)
+            with open(os.path.join(multi_track, "models_endurance.ini"), "w") as f:
+                f.write("")
+            with open(os.path.join(multi_track, "models_nordschleife.ini"), "w") as f:
+                f.write("")
+            with open(batch_file, "w") as f:
+                f.write(single_track + ";\n")
+
+            with mock.patch.object(build_track, "main", side_effect=fake_build), \
+                    mock.patch.object(convert_multiple_tracks, "main", side_effect=fake_batch), \
+                    mock.patch.object(ac2ams1, "_pause_if_explorer"), \
+                    mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                    mock.patch("builtins.input", return_value="2"):
+                self.assertEqual(ac2ams1.main([single_track]), 0)
+                self.assertEqual(ac2ams1.main([multi_track]), 0)
+                self.assertEqual(ac2ams1.main([batch_file]), 0)
+
+        self.assertEqual(seen[0][0], "build")
+        self.assertEqual(seen[0][1][1:], [single_track])
+        self.assertEqual(seen[1][0], "build")
+        self.assertEqual(seen[1][1][1:], [multi_track, "--layout", "nordschleife"])
+        self.assertEqual(seen[2][0], "batch")
+        self.assertEqual(seen[2][1][1:], [batch_file])
 
 
 if __name__ == "__main__":

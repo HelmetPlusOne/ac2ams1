@@ -197,7 +197,7 @@ def check(track_dir=None, layout=None, blender=None, install=None,
     if need_blender:
         check_blender(rep, blender)
 
-    free = shutil.disk_usage(HERE).free / 1e9
+    free = shutil.disk_usage(steam_paths.APP_DIR).free / 1e9
     if free < MIN_FREE_GB:
         rep.note("only %.0f GB free on this drive; a build writes several GB "
                  "into out\\" % free)
@@ -227,14 +227,13 @@ def main():
         os.environ["AC2AMS_TEXCONV"] = os.path.abspath(args.texconv)
     if args.encryptor:
         os.environ["AC2AMS_ENCRYPTOR"] = os.path.abspath(args.encryptor)
+    import steam_paths
     if not args.blender:
-        from build_track import BLENDER
-        args.blender = BLENDER
+        args.blender = steam_paths.BLENDER
     import track_zip
     if args.track_dir and track_zip.is_zip(args.track_dir):
         args.track_dir = track_zip.extract(args.track_dir)
-    import steam_paths
-    ok = check(args.track_dir, args.layout, args.blender, steam_paths.LOCATIONS)
+    ok = check(args.track_dir, args.layout, args.blender, steam_paths.INSTALL_LOCATIONS)
     if ok:
         print("\nall good")
     sys.exit(0 if ok else 1)

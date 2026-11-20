@@ -539,13 +539,22 @@ def stage_skybox(stage_dir, locations, venue):
     with open(os.path.join(stage_dir, "skyboxi.gmt"), "wb") as f:
         f.write(gmt_rf1.make_minimal_rf1_gmt("skyboxi", "_invisible.dds"))
 
+    import steam_paths
+
     found = {}
-    if locations and os.path.isdir(locations):
-        wanted = {name.lower(): name for name in SKY_ASSETS}
-        for entry in sorted(os.listdir(locations)):
+    search_roots = []
+    for root in (locations, steam_paths.LOCATIONS):
+        if root and os.path.isdir(root):
+            norm = os.path.normcase(os.path.abspath(root))
+            if norm not in {os.path.normcase(os.path.abspath(r)) for r in search_roots}:
+                search_roots.append(root)
+
+    wanted = {name.lower(): name for name in SKY_ASSETS}
+    for root in search_roots:
+        for entry in sorted(os.listdir(root)):
             if entry.casefold() == venue.casefold():
                 continue
-            folder = os.path.join(locations, entry)
+            folder = os.path.join(root, entry)
             if not os.path.isdir(folder):
                 continue
             for name in os.listdir(folder):
@@ -556,6 +565,8 @@ def stage_skybox(stage_dir, locations, venue):
                         found[wanted[key]] = src
             if len(found) == len(SKY_ASSETS):
                 break
+        if len(found) == len(SKY_ASSETS):
+            break
 
     sky_meshes = []
     for asset in SKY_ASSETS:
