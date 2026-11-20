@@ -177,9 +177,10 @@ def check(track_dir=None, layout=None, blender=None, install=None,
                                 "In Steam: Automobilista > Properties > Installed Files > "
                                 "Verify integrity of game files")
 
-    from ams_crypt import encryption_available
-    if encryption_available():
-        rep.ok("AMS1 GMT/DDS encryption tool")
+    from ams_crypt import encryptor_source
+    encryptor = encryptor_source()
+    if encryptor:
+        rep.ok("AMS1 GMT/DDS encryption tool  %s" % encryptor)
     else:
         rep.problem("AMS1 requires encrypted GMT and DDS files, but no encryptor was found",
                     "Install rfactortools from https://github.com/Grumbel/rfactortools "

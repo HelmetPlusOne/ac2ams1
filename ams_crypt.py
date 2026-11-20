@@ -42,8 +42,17 @@ def _encryptor():
     return None
 
 
+def encryptor_source():
+    """Return the active encryptor executable path or rfactortools module description."""
+    lib = _library()
+    if lib is not None:
+        path = getattr(lib, "__file__", None)
+        return "rfactortools (%s)" % path if path else "rfactortools"
+    return _encryptor()
+
+
 def encryption_available():
-    return _library() is not None or _encryptor() is not None
+    return encryptor_source() is not None
 
 
 def crypt_info(path):
