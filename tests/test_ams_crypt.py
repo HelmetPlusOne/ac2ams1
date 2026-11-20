@@ -238,6 +238,96 @@ class AmsCryptTests(unittest.TestCase):
         self.assertAlmostEqual(ny, 1.0, places=5)
         self.assertAlmostEqual(nz, 0.0, places=5)
 
+    def test_deduplicates_vertices_and_remaps_triangles_and_faces(self):
+        # 2-triangle quad (6 unshared verts -> 4 unique) + 1 vertex with flipped
+        # tangent handedness at the same pos/normal/UV (must stay separate -> 5 unique).
+        nmesh, nface, nnorm, vcount, tcount = 1, 2, 2, 7, 6
+        out = bytearray(gmt_rf1.RF2_HEADER_SIZE)
+        struct.pack_into("<I", out, 4, 0x04000020)
+        struct.pack_into("<3f", out, 0x0C8, 0.0, 0.0, 0.0)
+        struct.pack_into("<3f", out, 0x0D4, 1.0, 0.0, 1.0)
+        struct.pack_into("<f", out, 0x0E0, 1.0)
+        struct.pack_into("<2f", out, 0x100, 0.0, 1000.0)
+        out[0x17C:0x1BC] = gmt_rf1._pad_ascii("quad", 64)
+        out[0x1BC:0x1CC] = gmt_rf1.RF2_GMT_MAGIC
+
+        moff = len(out)
+        mesh = bytearray(gmt_rf1.RF2_MESH_SIZE)
+        struct.pack_into("<10I", mesh, 0, 0x20004011, vcount, 0, tcount, 0, 0, 0, 0, 0, 0)
+        out.extend(mesh)
+
+        foff = len(out)
+        out.extend(struct.pack("<4H2I4f", 0, 1, 2, 4, 0, 0, 0.3, 0.0, 0.3, 0.5))
+        out.extend(struct.pack("<4H2I4f", 3, 4, 5, 4, 0, 1, 0.7, 0.0, 0.7, 0.5))
+
+        noff = len(out)
+        out.extend(struct.pack("<3fI", 0.0, 0.0, 1.0, 1))
+        out.extend(struct.pack("<3fI", 0.0, 0.0, 1.0, 1))
+
+        # Shared corners (0==3 and 2==4) have 1e-5 normal noise; vertex 6 has
+        # flipped bitangent (opposite handedness) and must not merge with 0.
+        vert_specs = [
+            ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((1.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 1.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((0.0, 0.0, 0.0), (1e-5, 0.99999, -1e-5), (0.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((1.0, 0.0, 1.0), (-1e-5, 0.99999, 1e-5), (1.0, 1.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (0.0, 1.0), (1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+            ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0, -1.0)),
+        ]
+        voff = len(out)
+        for pos, nrm, uv, tb in vert_specs:
+            v = bytearray(gmt_rf1.RF2_VERTEX_SIZE)
+            struct.pack_into("<6fI", v, 0, *pos, *nrm, 0xFFFFFFFF)
+            struct.pack_into("<6f", v, 40, *tb)
+            struct.pack_into("<8f", v, 64, uv[0], uv[1], uv[0], uv[1], uv[0], uv[1], uv[0], uv[1])
+            out.extend(v)
+
+        toff = len(out)
+        out.extend(struct.pack("<6H", 0, 1, 2, 3, 4, 5))
+
+        mat_off = len(out)
+        out.extend(struct.pack("<I", 1))
+        mat = bytearray(gmt_rf1.RF2_MAT_HEADER_SIZE)
+        mat[0:64] = gmt_rf1._pad_ascii("mat0", 64)
+        struct.pack_into("<I", mat, 64, 0x68900003)
+        struct.pack_into("<16f", mat, 68, *([0.5, 0.5, 0.5, 1.0] * 4))
+        struct.pack_into("<2If", mat, 132, 2, 1, 10.0)
+        mat[148:212] = gmt_rf1._pad_ascii("L2BUMPSPECMAPT0", 64)
+        struct.pack_into("<I", mat, 256, 3)
+        out.extend(mat)
+        for stage, tname in enumerate(("a.dds", "s.dds", "b.dds")):
+            tex = bytearray(gmt_rf1.RF2_TEXTURE_SIZE)
+            tex[0:64] = gmt_rf1._pad_ascii(tname, 64)
+            struct.pack_into("<IiIIIfI", tex, 64, 0x18, -1, 1, 1, 3, 1.0, stage)
+            out.extend(tex)
+
+        struct.pack_into("<I", out, 0, mat_off - 4)
+        struct.pack_into("<12I", out, 0x13C,
+                         vcount, voff - 4, tcount, toff - 4,
+                         nmesh, moff - 4, nface, foff - 4, nnorm, noff - 4, 0, voff - 4)
+        rf2 = bytes(out)
+
+        fast = gmt_rf1.convert_rf2_to_rf1(rf2)
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure = gmt_rf1.convert_rf2_to_rf1(rf2)
+        self.assertEqual(fast, pure)
+
+        _nm, moff_r, nf, foff_r, _nn, _no = struct.unpack_from("<6I", fast, 0x174)
+        _mf, voff_r, _, _, _, _, new_vc, _, new_tc, toff_r = struct.unpack_from("<10I", fast, moff_r + 4)
+        self.assertEqual((new_vc, new_tc), (5, 6))
+        tris = struct.unpack_from("<6H", fast, toff_r + 4)
+        self.assertEqual(tris, (0, 1, 2, 0, 2, 3))
+        f0 = struct.unpack_from("<3H", fast, foff_r + 4)
+        f1 = struct.unpack_from("<3H", fast, foff_r + 4 + gmt_rf1.FACE_SIZE)
+        self.assertEqual((f0, f1), ((0, 1, 2), (0, 2, 3)))
+        # Vertex positions after remapping match original corners exactly.
+        for fi, orig_tri in enumerate(((0, 1, 2), (3, 4, 5))):
+            new_tri = struct.unpack_from("<3H", fast, foff_r + 4 + fi * gmt_rf1.FACE_SIZE)
+            for oi, ni in zip(orig_tri, new_tri):
+                got_pos = struct.unpack_from("<3f", fast, voff_r + 4 + ni * gmt_rf1.RF1_VERTEX_SIZE)
+                self.assertEqual(got_pos, vert_specs[oi][0])
+
     def test_encrypts_with_standalone_tool_when_package_is_unavailable(self):
         def run(command, **_kwargs):
             for path in command[6:]:

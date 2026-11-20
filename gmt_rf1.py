@@ -11,6 +11,7 @@ TexturesUV / optional 24-byte UVTangents arrays per mesh, and 3-level
 (L0/L1/L2) materials with 172-byte texture records using shaders defined in
 AMS1's coreshaders.mas.
 """
+import math
 import struct
 
 try:
@@ -204,6 +205,185 @@ def _split_vertices(data, vert_offset_bytes, vert_count, uv_perm, need_tangents)
             dt = i * RF1_TANGENT_SIZE
             tangents[dt:dt + 24] = raw[s + 40:s + 64]
     return bytes(verts), bytes(uvs), (bytes(tangents) if need_tangents else None)
+
+
+def _dedup_mesh_vertices(verts_bytes, uvs_bytes, tans_bytes, vert_count):
+    """Deduplicate mesh vertices in first-appearance order.
+
+    Blender's io_rf2_gmt_release exports 3 unshared vertices per triangle and
+    introduces ~1e-5 per-loop rounding noise in split normals and tangents.
+    Vertices are merged when they share exact position, vertex colour, all 4 UV
+    channels, quantized normal (1/500 ~= 0.11 deg), and tangent-space
+    handedness (preserving hard edges, UV seams, and mirrored normal maps).
+
+    Returns (verts_bytes, uvs_bytes, tans_bytes, new_vcount, remap) where
+    remap[old_idx] == new_idx.
+    """
+    has_tan = tans_bytes is not None
+    if vert_count <= 1:
+        remap = (_np.arange(vert_count, dtype=_np.uint16)
+                 if _np is not None else list(range(vert_count)))
+        return verts_bytes, uvs_bytes, tans_bytes, vert_count, remap
+
+    if _np is not None:
+        va_u8 = _np.frombuffer(verts_bytes, dtype=_np.uint8).reshape(vert_count, RF1_VERTEX_SIZE)
+        ua_u8 = _np.frombuffer(uvs_bytes, dtype=_np.uint8).reshape(vert_count, RF1_UV_SIZE)
+        vf = _np.frombuffer(verts_bytes, dtype="<f4").reshape(vert_count, 8)
+        vc = _np.frombuffer(verts_bytes, dtype="<u4").reshape(vert_count, 8)[:, 6:8]
+        uf = _np.frombuffer(uvs_bytes, dtype="<f4").reshape(vert_count, 8)
+
+        pos = _np.where(_np.isfinite(vf[:, :3]), vf[:, :3], 0.0).astype("<f4") + _np.float32(0.0)
+        uvs = _np.where(_np.isfinite(uf), uf, 0.0).astype("<f4") + _np.float32(0.0)
+        nf64 = _np.where(_np.isfinite(vf[:, 3:6]), vf[:, 3:6], 0.0).astype(_np.float64)
+        nf64 = _np.clip(nf64, -1.0, 1.0)
+        nrm = _np.rint(nf64 * 500.0).astype("<i2")
+
+        if has_tan:
+            ta_u8 = _np.frombuffer(tans_bytes, dtype=_np.uint8).reshape(vert_count, RF1_TANGENT_SIZE)
+            tf = _np.frombuffer(tans_bytes, dtype="<f4").reshape(vert_count, 6)
+            tf64 = _np.where(_np.isfinite(tf), tf, 0.0).astype(_np.float64)
+            cx = nf64[:, 1] * tf64[:, 2] - nf64[:, 2] * tf64[:, 1]
+            cy = nf64[:, 2] * tf64[:, 0] - nf64[:, 0] * tf64[:, 2]
+            cz = nf64[:, 0] * tf64[:, 1] - nf64[:, 1] * tf64[:, 0]
+            handed = ((cx * tf64[:, 3] + cy * tf64[:, 4] + cz * tf64[:, 5]) >= 0.0).astype(_np.uint8)
+            keys = _np.empty(vert_count, dtype=[
+                ("p", "<f4", 3), ("n", "<i2", 3), ("c", "<u4", 2),
+                ("u", "<f4", 8), ("h", "u1"),
+            ])
+            keys["h"] = handed
+        else:
+            keys = _np.empty(vert_count, dtype=[
+                ("p", "<f4", 3), ("n", "<i2", 3), ("c", "<u4", 2),
+                ("u", "<f4", 8),
+            ])
+        keys["p"] = pos
+        keys["n"] = nrm
+        keys["c"] = vc
+        keys["u"] = uvs
+
+        _, first_idx, inv = _np.unique(keys, return_index=True, return_inverse=True)
+        new_vcount = int(len(first_idx))
+        if new_vcount == vert_count:
+            return verts_bytes, uvs_bytes, tans_bytes, vert_count, _np.arange(vert_count, dtype=_np.uint16)
+
+        order = _np.argsort(first_idx)
+        keep = first_idx[order]
+        rank = _np.empty(new_vcount, dtype=_np.uint16)
+        rank[order] = _np.arange(new_vcount, dtype=_np.uint16)
+        remap = rank[inv]
+
+        new_verts = _np.ascontiguousarray(va_u8[keep]).tobytes()
+        new_uvs = _np.ascontiguousarray(ua_u8[keep]).tobytes()
+        new_tans = _np.ascontiguousarray(ta_u8[keep]).tobytes() if has_tan else None
+        return new_verts, new_uvs, new_tans, new_vcount, remap
+
+    def _clean(x):
+        return (x + 0.0) if math.isfinite(x) else 0.0
+
+    def _qnorm(x):
+        v = _clean(x)
+        if v > 1.0:
+            v = 1.0
+        elif v < -1.0:
+            v = -1.0
+        return int(round(v * 500.0))
+
+    seen = {}
+    keep = []
+    remap = [0] * vert_count
+    for i in range(vert_count):
+        px, py, pz, nx, ny, nz, dc, sc = struct.unpack_from("<6f2I", verts_bytes, i * RF1_VERTEX_SIZE)
+        uv = struct.unpack_from("<8f", uvs_bytes, i * RF1_UV_SIZE)
+        key_base = (
+            _clean(px), _clean(py), _clean(pz),
+            _qnorm(nx), _qnorm(ny), _qnorm(nz),
+            dc, sc,
+            tuple(_clean(c) for c in uv),
+        )
+        if has_tan:
+            tx, ty, tz, bx, by, bz = struct.unpack_from("<6f", tans_bytes, i * RF1_TANGENT_SIZE)
+            fnx = max(-1.0, min(1.0, _clean(nx)))
+            fny = max(-1.0, min(1.0, _clean(ny)))
+            fnz = max(-1.0, min(1.0, _clean(nz)))
+            ftx, fty, ftz = _clean(tx), _clean(ty), _clean(tz)
+            fbx, fby, fbz = _clean(bx), _clean(by), _clean(bz)
+            cx = fny * ftz - fnz * fty
+            cy = fnz * ftx - fnx * ftz
+            cz = fnx * fty - fny * ftx
+            handed = 1 if (cx * fbx + cy * fby + cz * fbz) >= 0.0 else 0
+            key = key_base + (handed,)
+        else:
+            key = key_base
+        idx = seen.get(key)
+        if idx is None:
+            idx = len(keep)
+            seen[key] = idx
+            keep.append(i)
+        remap[i] = idx
+
+    new_vcount = len(keep)
+    if new_vcount == vert_count:
+        return verts_bytes, uvs_bytes, tans_bytes, vert_count, remap
+
+    new_verts = bytearray(new_vcount * RF1_VERTEX_SIZE)
+    new_uvs = bytearray(new_vcount * RF1_UV_SIZE)
+    new_tans = bytearray(new_vcount * RF1_TANGENT_SIZE) if has_tan else None
+    for dst_i, src_i in enumerate(keep):
+        s_v = src_i * RF1_VERTEX_SIZE
+        d_v = dst_i * RF1_VERTEX_SIZE
+        new_verts[d_v:d_v + RF1_VERTEX_SIZE] = verts_bytes[s_v:s_v + RF1_VERTEX_SIZE]
+        s_u = src_i * RF1_UV_SIZE
+        d_u = dst_i * RF1_UV_SIZE
+        new_uvs[d_u:d_u + RF1_UV_SIZE] = uvs_bytes[s_u:s_u + RF1_UV_SIZE]
+        if has_tan:
+            s_t = src_i * RF1_TANGENT_SIZE
+            d_t = dst_i * RF1_TANGENT_SIZE
+            new_tans[d_t:d_t + RF1_TANGENT_SIZE] = tans_bytes[s_t:s_t + RF1_TANGENT_SIZE]
+    return bytes(new_verts), bytes(new_uvs), (bytes(new_tans) if has_tan else None), new_vcount, remap
+
+
+def _remap_triangles(data, tri_src, tcount, remap, old_vcount):
+    """Remap uint16 mesh triangle indices through per-mesh vertex deduplication."""
+    if tcount == 0:
+        return b""
+    if _np is not None:
+        tris = _np.frombuffer(data, dtype="<u2", count=tcount, offset=tri_src)
+        valid = tris < old_vcount
+        safe = _np.where(valid, tris, 0)
+        remapped = _np.where(valid, remap[safe], tris).astype("<u2")
+        return remapped.tobytes()
+    tris = struct.unpack_from("<%dH" % tcount, data, tri_src)
+    remapped = [remap[idx] if idx < old_vcount else idx for idx in tris]
+    return struct.pack("<%dH" % tcount, *remapped)
+
+
+def _remap_face_vertices(face_bytes, nface, global_remap, old_total_vcount):
+    """Remap FaceData (v0, v1, v2) indices after mesh vertex deduplication."""
+    if nface == 0:
+        return face_bytes
+    if _np is not None:
+        face_dt = _np.dtype([
+            ("v0", "<u2"), ("v1", "<u2"), ("v2", "<u2"), ("flg", "<u2"),
+            ("mesh", "<u4"), ("ni", "<u4"),
+            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("area", "<f4"),
+        ])
+        faces = _np.frombuffer(face_bytes, dtype=face_dt, count=nface).copy()
+        for col in ("v0", "v1", "v2"):
+            v = faces[col]
+            valid = v < old_total_vcount
+            safe = _np.where(valid, v, 0)
+            faces[col] = _np.where(valid, global_remap[safe], v).astype("<u2")
+        return faces.tobytes()
+
+    out = bytearray(face_bytes)
+    for fi in range(nface):
+        off = fi * FACE_SIZE
+        v0, v1, v2 = struct.unpack_from("<3H", out, off)
+        nv0 = global_remap[v0] if v0 < old_total_vcount else v0
+        nv1 = global_remap[v1] if v1 < old_total_vcount else v1
+        nv2 = global_remap[v2] if v2 < old_total_vcount else v2
+        struct.pack_into("<3H", out, off, nv0, nv1, nv2)
+    return bytes(out)
 
 
 def _dominant_axis_flag(nx, ny, nz):
@@ -467,13 +647,14 @@ def convert_rf2_to_rf1(data, label="GMT"):
     face_bytes, norm_bytes, out_nnorm = _rebuild_faces_and_normals(
         data, voff, vcount, foff, nface, noff, nnorm)
 
-    face_off = len(out)
-    out.extend(face_bytes)
+    # Deduplicate vertices per mesh and remap triangle & face indices.
+    if _np is not None:
+        global_remap = _np.arange(vcount, dtype=_np.uint16)
+    else:
+        global_remap = list(range(vcount))
 
-    norm_off = len(out)
-    out.extend(norm_bytes)
-
-    first_vert_off = None
+    mesh_payloads = []
+    new_vstart = 0
     for mi, (m_flags, m_vcount, m_tcount, m_vstart, m_tstart, m_mat) in enumerate(meshes):
         mat = materials[m_mat] if materials else None
         has_bump = bool(mat["has_bump"]) if mat else False
@@ -481,7 +662,36 @@ def convert_rf2_to_rf1(data, label="GMT"):
 
         verts_bytes, uvs_bytes, tans_bytes = _split_vertices(
             data, voff + m_vstart * RF2_VERTEX_SIZE, m_vcount, uv_perm, has_bump)
+        verts_bytes, uvs_bytes, tans_bytes, new_vcount, remap = _dedup_mesh_vertices(
+            verts_bytes, uvs_bytes, tans_bytes, m_vcount)
+        tris_bytes = _remap_triangles(
+            data, toff + m_tstart * 2, m_tcount, remap, m_vcount)
 
+        if m_vcount:
+            if _np is not None:
+                global_remap[m_vstart:m_vstart + m_vcount] = (
+                    remap.astype(_np.uint32) + new_vstart).astype(_np.uint16)
+            else:
+                for local_i in range(m_vcount):
+                    global_remap[m_vstart + local_i] = new_vstart + remap[local_i]
+        new_vstart += new_vcount
+
+        mesh_payloads.append((
+            m_flags, has_bump, new_vcount, m_tcount, m_mat,
+            verts_bytes, uvs_bytes, tans_bytes, tris_bytes,
+        ))
+
+    face_bytes = _remap_face_vertices(face_bytes, nface, global_remap, vcount)
+
+    face_off = len(out)
+    out.extend(face_bytes)
+
+    norm_off = len(out)
+    out.extend(norm_bytes)
+
+    first_vert_off = None
+    for mi, (m_flags, has_bump, new_vcount, m_tcount, m_mat,
+             verts_bytes, uvs_bytes, tans_bytes, tris_bytes) in enumerate(mesh_payloads):
         m_voff = len(out)
         if first_vert_off is None:
             first_vert_off = m_voff
@@ -500,8 +710,7 @@ def convert_rf2_to_rf1(data, label="GMT"):
             rf1_tan_rel = 0
 
         m_trioff = len(out)
-        tri_src = toff + m_tstart * 2
-        out.extend(data[tri_src:tri_src + m_tcount * 2])
+        out.extend(tris_bytes)
 
         # Write 132-byte rF1 TGMTMesh descriptor.
         mbase = RF1_HEADER_SIZE + mi * RF1_MESH_SIZE
@@ -513,7 +722,7 @@ def convert_rf2_to_rf1(data, label="GMT"):
             m_uvoff - 4,
             0,
             rf1_tan_rel,
-            m_vcount,
+            new_vcount,
             0,
             m_tcount,
             m_trioff - 4,
