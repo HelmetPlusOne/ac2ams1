@@ -3,6 +3,7 @@
 Recreates ``dist/`` from scratch with:
   - ``ac2ams1.exe`` (bundled Python runtime + NumPy + converter exposing
     ``build_track``, ``convert_multiple_tracks``, and drag-and-drop support)
+  - ``ac2ams1.ini`` (default configuration, e.g. ``[track] texture_scale``)
   - ``README.md`` (usage instructions and list of bundled tools)
   - ``tools/blender/`` (portable Blender 3.6 LTS with ``io_rf2_gmt_release``
     pre-installed inside ``3.6/scripts/addons/``)
@@ -278,11 +279,16 @@ def main(argv=None):
     for asset_name, asset_path in sky_sources.items():
         shutil.copy2(asset_path, os.path.join(ams_sky_dst, asset_name))
 
-    # 6. Copy standalone README.md and create out/ and work/ folders with readme.txt.
+    # 6. Copy standalone README.md, ac2ams1.ini, and create out/ and work/ with readme.txt.
     dist_readme = os.path.join(HERE, "DIST_README.md")
     if not os.path.isfile(dist_readme):
         raise SystemExit("Required source missing (DIST_README.md): %s" % dist_readme)
     shutil.copy2(dist_readme, os.path.join(dist_dir, "README.md"))
+
+    ini_src = os.path.join(HERE, steam_paths.INI_NAME)
+    if not os.path.isfile(ini_src):
+        raise SystemExit("Required source missing (%s): %s" % (steam_paths.INI_NAME, ini_src))
+    shutil.copy2(ini_src, os.path.join(dist_dir, steam_paths.INI_NAME))
 
     out_dir = os.path.join(dist_dir, "out")
     work_dir = os.path.join(dist_dir, "work")

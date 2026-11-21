@@ -593,6 +593,19 @@ class AmsFinalizeTests(unittest.TestCase):
         self.assertEqual(fix_textures.target_size(4096, 1.0), 4096)
         self.assertEqual(fix_textures.target_size(600, 1.0), 1024)
 
+    def test_texture_scale_min_size_is_inclusive_at_1024_and_excludes_512(self):
+        # Default min_size=1024: 1024+ scaled, 512 and smaller left unscaled.
+        self.assertEqual(fix_textures.target_dimensions(4096, 2048, 0.5, 1024), (2048, 1024))
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, 0.5, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(1024, 256, 0.5, 1024), (512, 128))
+        self.assertEqual(fix_textures.target_dimensions(512, 512, 0.5, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(512, 256, 0.5, 1024), (512, 256))
+        self.assertEqual(fix_textures.target_dimensions(256, 256, 0.5, 1024), (256, 256))
+        # Non-pow2 below threshold snaps to pow2 without downscaling.
+        self.assertEqual(fix_textures.target_dimensions(600, 600, 0.5, 1024), (1024, 1024))
+        # min_size=0 scales everything.
+        self.assertEqual(fix_textures.target_dimensions(512, 512, 0.5, 0), (256, 256))
+
 
 class ConvertMultipleTracksTests(unittest.TestCase):
     def test_runs_all_lines_with_install_auto_and_skips_errors(self):
@@ -704,6 +717,51 @@ class StandaloneCliTests(unittest.TestCase):
         self.assertEqual(seen[1][1][1:], [multi_track, "--layout", "nordschleife"])
         self.assertEqual(seen[2][0], "batch")
         self.assertEqual(seen[2][1][1:], [batch_file])
+
+    def test_load_config_reads_texture_scale_from_ini_and_validates(self):
+        import steam_paths
+
+        with tempfile.TemporaryDirectory() as root:
+            # Missing ini falls back to defaults.
+            cfg = steam_paths.load_config(root)
+            self.assertFalse(cfg["exists"])
+            self.assertEqual(cfg["texture_scale"], 0.5)
+            self.assertEqual(cfg["texture_scale_source"], "default")
+            self.assertEqual(cfg["texture_scale_min_size"], 1024)
+            self.assertEqual(cfg["texture_scale_min_size_source"], "default")
+
+            # Partial ini marks only specified keys as read from ini.
+            ini = os.path.join(root, "ac2ams1.ini")
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\ntexture_scale=0.25 # quarter\n")
+            cfg = steam_paths.load_config(root)
+            self.assertTrue(cfg["exists"])
+            self.assertEqual(cfg["texture_scale"], 0.25)
+            self.assertEqual(cfg["texture_scale_source"], "ini")
+            self.assertEqual(cfg["texture_scale_min_size"], 1024)
+            self.assertEqual(cfg["texture_scale_min_size_source"], "default")
+
+            # Full ini overrides both defaults.
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\ntexture_scale=0.75\ntexture_scale_min_size=512\n")
+            cfg = steam_paths.load_config(root)
+            self.assertTrue(cfg["exists"])
+            self.assertEqual(cfg["texture_scale"], 0.75)
+            self.assertEqual(cfg["texture_scale_source"], "ini")
+            self.assertEqual(cfg["texture_scale_min_size"], 512)
+            self.assertEqual(cfg["texture_scale_min_size_source"], "ini")
+
+            # Out-of-range scale raises ValueError.
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\ntexture_scale=2.0\n")
+            with self.assertRaises(ValueError):
+                steam_paths.load_config(root)
+
+            # Negative min size raises ValueError.
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\ntexture_scale_min_size=-1\n")
+            with self.assertRaises(ValueError):
+                steam_paths.load_config(root)
 
 
 if __name__ == "__main__":

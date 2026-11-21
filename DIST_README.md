@@ -40,7 +40,8 @@ Common options:
 
 - `--layout <name>` — layout name for multi-layout tracks (the part after `models_` in `models_<name>.ini`).
 - `--hour HH:MM` — session start time (default `12:00`).
-- `--texture-scale <0..1>` — texture resolution scale per dimension (default `0.5`).
+- `--texture-scale <0..1>` — texture resolution scale per dimension (overrides `ac2ams1.ini`; default `0.5`).
+- `--texture-scale-min-size <px>` — minimum `max(width, height)` (inclusive) to scale textures (overrides `ac2ams1.ini`; default `1024`, so `1024x1024`+ are scaled while `512x512` and smaller are kept unscaled).
 - `--jobs <n>` — number of parallel Blender and texture conversion workers.
 - `--skip-geometry` — reuse previously exported GMT meshes in `work\<track>\gmt\`.
 - `--install "<dir>"` — override the automatic install destination (defaults to `out\` next to `ac2ams1.exe`).
@@ -81,6 +82,7 @@ All tool and data paths are resolved relative to `ac2ams1.exe`:
 | Path | Contents / Purpose |
 | --- | --- |
 | `ac2ams1.exe` | Single executable bundling **Python 3.10**, **NumPy**, and the AC-to-AMS1 converter scripts (`build_track`, `convert_multiple_tracks`, `check_setup`, `verify_install`, and all conversion stages). |
+| `ac2ams1.ini` | Configuration file read from the same folder as `ac2ams1.exe` (`[track]` `texture_scale=0.5`, `texture_scale_min_size=1024`). |
 | `tools\blender\` | Portable **Blender 3.6 LTS** (`blender.exe`) with the **rFactor 2 GMT Exporter add-on (`io_rf2_gmt_release`)** pre-installed under `3.6\scripts\addons\io_rf2_gmt_release\`. |
 | `tools\blender_scripts\` | Plain Python scripts executed inside Blender's own interpreter (`blender_stage.py`, `kn5.py`, `backdrop.py`). |
 | `tools\texconv\texconv.exe` | **Microsoft DirectXTex `texconv.exe`** for DX9 power-of-two DDS conversion, mipmap generation, multilayer material baking, and loading screen / minimap composition. |
@@ -119,12 +121,6 @@ of proprietary template files copied from local game installations:
 - **Automobilista 1** (© Reiza Studios):
   - `data\ams1\GameData\Locations\terrain.tdf` — stock AMS1 terrain template.
   - `data\ams1\GameData\Locations\sky\SRPL_SKY3_DOME1.GMT` and `SRPL_SKY3_SUN1.GMT` — stock AMS1 skybox meshes required by the scene loader.
-
-These files are **proprietary game assets**, not open-source software, and
-remain the property of their respective copyright holders. Do not redistribute
-this bundle publicly with those game files included; if sharing the converter,
-remove `data\` and have users supply those files from their own licensed
-installations of Assetto Corsa and Automobilista 1.
 
 ## Notes
 

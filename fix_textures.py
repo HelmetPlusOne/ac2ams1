@@ -23,6 +23,7 @@ from parallel import default_jobs, ordered_map
 BLOCK = (b"DXT1", b"DXT3", b"DXT5")
 MAX_TEX_DIM = 4096
 DEFAULT_SCALE = 0.5
+DEFAULT_SCALE_MIN_SIZE = 1024
 
 # Rebuilding a block compressed texture means decoding and recompressing it, so
 # it is only worth doing in its own format: turning a normal map into BC3 would
@@ -53,6 +54,16 @@ def target_size(n, scale=DEFAULT_SCALE, cap=MAX_TEX_DIM):
     scaled = max(4, int(round(int(n) * float(scale))))
     max_dim = pow2_size(max(4, int(round(cap * float(scale)))), cap=cap)
     return pow2_size(scaled, cap=max_dim)
+
+
+def target_dimensions(w, h, scale=DEFAULT_SCALE, min_size=DEFAULT_SCALE_MIN_SIZE,
+                      cap=MAX_TEX_DIM):
+    """Compute DX9 target (w, h), scaling only when max(w, h) >= min_size."""
+    effective_scale = float(scale) if max(int(w), int(h)) >= int(min_size) else 1.0
+    return (
+        target_size(w, effective_scale, cap=cap),
+        target_size(h, effective_scale, cap=cap),
+    )
 
 
 def full_levels(w, h):
@@ -99,11 +110,15 @@ def main():
                     help="leave AC's truncated mip chains alone")
     ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
                     help="scale factor per dimension (default %.2f; 0.5 halves width and height)" % DEFAULT_SCALE)
+    ap.add_argument("--scale-min-size", type=int, default=DEFAULT_SCALE_MIN_SIZE,
+                    help="minimum max(w, h) (inclusive) to apply --scale (default %d; 0 scales all)" % DEFAULT_SCALE_MIN_SIZE)
     ap.add_argument("--jobs", type=int, default=default_jobs(),
                     help="textures converted at the same time (1: one by one)")
     args = ap.parse_args()
     if not (0.0 < args.scale <= 1.0):
         raise SystemExit("--scale must be between 0 and 1, got %r" % (args.scale,))
+    if args.scale_min_size < 0:
+        raise SystemExit("--scale-min-size must be >= 0, got %r" % (args.scale_min_size,))
 
     tex_dir = os.path.abspath(args.tex_dir)
     tmp = os.path.join(os.path.dirname(tex_dir.rstrip("\/")), "_converted")
@@ -122,7 +137,7 @@ def main():
                 print("skip (not dds): %s" % f)
             continue
         w, h, fourcc, bpp, mips = info
-        tw, th = target_size(w, args.scale), target_size(h, args.scale)
+        tw, th = target_dimensions(w, h, args.scale, args.scale_min_size)
         need_resize = (w != tw or h != th)
         if min(w, h) < 4:
             todo.append((f, w, h, tw, th, bpp, args.format, "under 4x4"))
@@ -141,7 +156,8 @@ def main():
         print("nothing to convert")
         return
 
-    print("re-encoding %d textures (scale=%.2f)" % (len(todo), args.scale))
+    print("re-encoding %d textures (scale=%.2f, min_size=%d)"
+          % (len(todo), args.scale, args.scale_min_size))
 
     def convert(job, work):
         """One texture; returns the line to print and whether it worked."""
@@ -170,7 +186,7 @@ def main():
         if (w == 0 or h == 0) and r.returncode == 0 and out is not None:
             got = describe(out)
             if got:
-                gtw, gth = target_size(got[0], args.scale), target_size(got[1], args.scale)
+                gtw, gth = target_dimensions(got[0], got[1], args.scale, args.scale_min_size)
                 if got[0] != gtw or got[1] != gth:
                     r = subprocess.run(
                         [args.texconv, "-f", fmt, "-m", str(full_levels(gtw, gth)),

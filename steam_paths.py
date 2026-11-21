@@ -20,6 +20,7 @@ Outside a standalone bundle, Steam libraries and registry paths are used, and
 environment variables (AC2AMS_GAME_DIR, AC2AMS_AC_DIR, AC2AMS_TEXCONV,
 AC2AMS_BLENDER, AC2AMS_ENCRYPTOR) can override any path.
 """
+import configparser
 import os
 import re
 import sys
@@ -27,6 +28,9 @@ import sys
 STEAM_DEFAULT = r"C:\Program Files (x86)\Steam"
 DEFAULT_BLENDER = r"D:\Apps\Blender\blender.exe"
 DEFAULT_ENCRYPTOR = r"D:\Mods\Automobilista\Tools\rfactortools-0.3.1.win32\rfactorcrypt.exe"
+INI_NAME = "ac2ams1.ini"
+DEFAULT_TEXTURE_SCALE = 0.5
+DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
 
 
 def app_dir():
@@ -138,6 +142,60 @@ ENCRYPTOR = (
 LOCATIONS = os.path.join(AMS_DIR, "GameData", "Locations")
 INSTALL_LOCATIONS = os.path.join(APP_DIR, "out") if IS_STANDALONE else LOCATIONS
 WORK_ROOT = os.path.join(APP_DIR, "work") if IS_STANDALONE else os.path.join(APP_DIR, "out")
+
+
+def load_config(base_dir=None):
+    """Read optional ``ac2ams1.ini`` from the script/EXE directory."""
+    root = base_dir if base_dir is not None else APP_DIR
+    ini_path = os.path.join(root, INI_NAME)
+    result = {
+        "path": ini_path,
+        "exists": False,
+        "texture_scale": DEFAULT_TEXTURE_SCALE,
+        "texture_scale_source": "default",
+        "texture_scale_min_size": DEFAULT_TEXTURE_SCALE_MIN_SIZE,
+        "texture_scale_min_size_source": "default",
+    }
+    if not os.path.isfile(ini_path):
+        return result
+
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    try:
+        with open(ini_path, encoding="utf-8-sig") as f:
+            parser.read_file(f)
+    except (OSError, configparser.Error) as exc:
+        raise ValueError("could not parse %s: %s" % (ini_path, exc)) from exc
+
+    result["exists"] = True
+    if parser.has_option("track", "texture_scale"):
+        raw = parser.get("track", "texture_scale").strip()
+        try:
+            scale = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "[track] texture_scale must be a number, got %r" % (raw,)
+            ) from exc
+        if not (0.0 < scale <= 1.0):
+            raise ValueError(
+                "[track] texture_scale must be between 0 and 1, got %r" % (scale,)
+            )
+        result["texture_scale"] = scale
+        result["texture_scale_source"] = "ini"
+    if parser.has_option("track", "texture_scale_min_size"):
+        raw = parser.get("track", "texture_scale_min_size").strip()
+        try:
+            min_size = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "[track] texture_scale_min_size must be an integer, got %r" % (raw,)
+            ) from exc
+        if min_size < 0:
+            raise ValueError(
+                "[track] texture_scale_min_size must be >= 0, got %r" % (min_size,)
+            )
+        result["texture_scale_min_size"] = min_size
+        result["texture_scale_min_size_source"] = "ini"
+    return result
 
 
 if __name__ == "__main__":
