@@ -254,6 +254,8 @@ def main():
                     help="scale factor per texture dimension (overrides ac2ams1.ini [track] texture_scale; default 0.5)")
     ap.add_argument("--texture-scale-min-size", type=int, default=None,
                     help="minimum max(w, h) (inclusive) to scale textures (overrides ac2ams1.ini [track] texture_scale_min_size; default 1024)")
+    ap.add_argument("--road-smoothness", type=float, default=None,
+                    help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; overrides ac2ams1.ini [track] road_smoothness)")
     ap.add_argument("--grain", default="2")
     ap.add_argument("--detail-metres", default="2.0",
                     help="how often the game repeats a second stage detail texture")
@@ -308,6 +310,13 @@ def main():
         args.texture_scale_min_size = config["texture_scale_min_size"]
     elif args.texture_scale_min_size < 0:
         raise SystemExit("--texture-scale-min-size must be >= 0, got %r" % (args.texture_scale_min_size,))
+    if args.road_smoothness is None:
+        args.road_smoothness = config["road_smoothness"]
+    else:
+        try:
+            steam_paths.road_smoothness_to_sigma(args.road_smoothness)
+        except ValueError as exc:
+            raise SystemExit("--road-smoothness: %s" % exc)
 
     if not args.blender:
         args.blender = steam_paths.BLENDER
@@ -342,7 +351,8 @@ def main():
     if not check_setup.check(args.track_dir, args.layout, args.blender,
                              args.install, need_blender=not reuse,
                              texture_scale=args.texture_scale,
-                             texture_scale_min_size=args.texture_scale_min_size):
+                             texture_scale_min_size=args.texture_scale_min_size,
+                             road_smoothness=args.road_smoothness):
         raise SystemExit(1)
     print("\nconverting %s" % track)
 
@@ -407,7 +417,8 @@ def main():
 
     step(7, "scene, database and install")
     cmd = stage_cmd("finalize_track.py", out, "--hour", args.hour,
-                    "--ambient", args.scene_ambient)
+                    "--ambient", args.scene_ambient,
+                    "--road-smoothness", repr(args.road_smoothness))
     preview = track_preview(args.track_dir, args.layout)
     if preview:
         cmd += ["--preview", preview, "--texconv", steam_paths.TEXCONV]

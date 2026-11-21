@@ -365,7 +365,7 @@ def _remap_face_vertices(face_bytes, nface, global_remap, old_total_vcount):
         face_dt = _np.dtype([
             ("v0", "<u2"), ("v1", "<u2"), ("v2", "<u2"), ("flg", "<u2"),
             ("mesh", "<u4"), ("ni", "<u4"),
-            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("area", "<f4"),
+            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("radius", "<f4"),
         ])
         faces = _np.frombuffer(face_bytes, dtype=face_dt, count=nface).copy()
         for col in ("v0", "v1", "v2"):
@@ -397,13 +397,16 @@ def _dominant_axis_flag(nx, ny, nz):
 
 
 def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
-    """Rebuild rF1 FaceData dominant-axis flags and NormalData from vertex geometry.
+    """Rebuild rF1 FaceData (flags, centroid, bounding radius) and NormalData.
 
-    Blender's io_rf2_gmt_release addon passes TPoint3D(X, Z, Y) normals through
-    AddXZYas021, double-swapping Y and Z in NormalData and swapping 2/3 vs 4/5
-    in FaceData.flags. On a flat road (true normal +Y, flag 2), that writes a
-    horizontal +Z normal with flag 4, causing AMS1's rigid-body collision solver
-    to shove cars sideways/backwards off the road.
+    Blender's io_rf2_gmt_release addon has two collision-data bugs:
+    1. It passes TPoint3D(X, Z, Y) normals through AddXZYas021, double-swapping
+       Y and Z in NormalData and swapping 2/3 vs 4/5 in FaceData.flags.
+    2. It writes triangle area instead of the face bounding-sphere radius
+       max(||p_i - centroid||) into FaceData's 4th float. On dense laser-scanned
+       road meshes (edge length < 1.33 m), area is ~3x smaller than the true
+       bounding radius, causing AMS1's HAT sphere pre-check to reject triangle
+       edges/corners and produce severe artificial bumpiness.
     """
     if nface == 0:
         return b"", b"", 0
@@ -417,7 +420,7 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
         face_dt = _np.dtype([
             ("v0", "<u2"), ("v1", "<u2"), ("v2", "<u2"), ("flg", "<u2"),
             ("mesh", "<u4"), ("ni", "<u4"),
-            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("area", "<f4"),
+            ("cx", "<f4"), ("cy", "<f4"), ("cz", "<f4"), ("radius", "<f4"),
         ])
         norm_dt = _np.dtype([
             ("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4"), ("sg", "<u4"),
@@ -440,6 +443,12 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
         p0 = pos[sv0]
         p1 = pos[sv1]
         p2 = pos[sv2]
+        centroid = (p0 + p1 + p2) / 3.0
+        r0 = _np.linalg.norm(p0 - centroid, axis=1)
+        r1 = _np.linalg.norm(p1 - centroid, axis=1)
+        r2 = _np.linalg.norm(p2 - centroid, axis=1)
+        radius = _np.maximum(_np.maximum(r0, r1), r2)
+
         cross = -_np.cross(p1 - p0, p2 - p0)
         lengths = _np.linalg.norm(cross, axis=1)
         good = valid_idx & (lengths > 1e-12)
@@ -474,6 +483,10 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
 
         out_faces["flg"] = flg
         out_faces["ni"] = _np.arange(nface, dtype=_np.uint32)
+        out_faces["cx"] = _np.where(valid_idx, centroid[:, 0], in_faces["cx"]).astype(_np.float32)
+        out_faces["cy"] = _np.where(valid_idx, centroid[:, 1], in_faces["cy"]).astype(_np.float32)
+        out_faces["cz"] = _np.where(valid_idx, centroid[:, 2], in_faces["cz"]).astype(_np.float32)
+        out_faces["radius"] = _np.where(valid_idx, radius, in_faces["radius"]).astype(_np.float32)
         out_norms["nx"] = nx.astype(_np.float32)
         out_norms["ny"] = ny.astype(_np.float32)
         out_norms["nz"] = nz.astype(_np.float32)
@@ -484,7 +497,7 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
     out_norms = bytearray(nface * NORMAL_SIZE)
     for fi in range(nface):
         fpos = foff + fi * FACE_SIZE
-        v0, v1, v2, _flg, mesh_i, ni, cx, cy, cz, area = struct.unpack_from(
+        v0, v1, v2, _flg, mesh_i, ni, cx, cy, cz, radius = struct.unpack_from(
             "<4H2I4f", data, fpos)
         if ni < nnorm:
             nx, ny, nz, sg = struct.unpack_from("<3fI", data, noff + ni * NORMAL_SIZE)
@@ -494,6 +507,13 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
             p0 = struct.unpack_from("<3f", data, voff + v0 * RF2_VERTEX_SIZE)
             p1 = struct.unpack_from("<3f", data, voff + v1 * RF2_VERTEX_SIZE)
             p2 = struct.unpack_from("<3f", data, voff + v2 * RF2_VERTEX_SIZE)
+            cx = (p0[0] + p1[0] + p2[0]) / 3.0
+            cy = (p0[1] + p1[1] + p2[1]) / 3.0
+            cz = (p0[2] + p1[2] + p2[2]) / 3.0
+            radius = max(
+                ((p[0] - cx) ** 2 + (p[1] - cy) ** 2 + (p[2] - cz) ** 2) ** 0.5
+                for p in (p0, p1, p2)
+            )
             ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
             vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
             tnx = -(uy * vz - uz * vy)
@@ -504,7 +524,7 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm):
                 nx, ny, nz = tnx / length, tny / length, tnz / length
         flg = _dominant_axis_flag(nx, ny, nz)
         struct.pack_into("<4H2I4f", out_faces, fi * FACE_SIZE,
-                         v0, v1, v2, flg, mesh_i, fi, cx, cy, cz, area)
+                         v0, v1, v2, flg, mesh_i, fi, cx, cy, cz, radius)
         struct.pack_into("<3fI", out_norms, fi * NORMAL_SIZE, nx, ny, nz, sg)
     return bytes(out_faces), bytes(out_norms), nface
 
@@ -812,12 +832,15 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
             nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
         else:
             nx, ny, nz = 0.0, 1.0, 0.0
-        area = 0.5 * nlen
         cx = (p0[0] + p1[0] + p2[0]) / 3.0
         cy = (p0[1] + p1[1] + p2[1]) / 3.0
         cz = (p0[2] + p1[2] + p2[2]) / 3.0
+        face_rad = max(
+            ((p[0] - cx) ** 2 + (p[1] - cy) ** 2 + (p[2] - cz) ** 2) ** 0.5
+            for p in (p0, p1, p2)
+        )
         flg = _dominant_axis_flag(nx, ny, nz)
-        tri_info.append((i0, i1, i2, flg, cx, cy, cz, area, nx, ny, nz))
+        tri_info.append((i0, i1, i2, flg, cx, cy, cz, face_rad, nx, ny, nz))
 
     fn = tri_info[0][8:11]
     bn = tri_info[2][8:11]
@@ -825,8 +848,8 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
 
     out = bytearray(RF1_HEADER_SIZE + RF1_MESH_SIZE)
     face_off = len(out)
-    for ti, (i0, i1, i2, flg, cx, cy, cz, area, _nx, _ny, _nz) in enumerate(tri_info):
-        out.extend(struct.pack("<4H2I4f", i0, i1, i2, flg, 0, ti, cx, cy, cz, area))
+    for ti, (i0, i1, i2, flg, cx, cy, cz, face_rad, _nx, _ny, _nz) in enumerate(tri_info):
+        out.extend(struct.pack("<4H2I4f", i0, i1, i2, flg, 0, ti, cx, cy, cz, face_rad))
     norm_off = len(out)
     for _i0, _i1, _i2, _flg, _cx, _cy, _cz, _area, nx, ny, nz in tri_info:
         out.extend(struct.pack("<3fI", nx, ny, nz, 0))

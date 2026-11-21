@@ -48,6 +48,7 @@ HIDDEN_IMPORTS = (
     "make_cam",
     "numpy",
     "parallel",
+    "road_smooth",
     "steam_paths",
     "track_zip",
     "verify_install",

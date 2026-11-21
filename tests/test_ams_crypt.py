@@ -234,12 +234,20 @@ class AmsCryptTests(unittest.TestCase):
         _nm, _mo, nface, foff_r, nnorm, noff_r = struct.unpack_from("<6I", fast, 0x174)
         self.assertEqual((nface, nnorm), (1, 1))
         flg = struct.unpack_from("<H", fast, foff_r + 4 + 6)[0]
+        cx, cy, cz, rad = struct.unpack_from("<4f", fast, foff_r + 4 + 16)
         nx, ny, nz, sg = struct.unpack_from("<3fI", fast, noff_r + 4)
         self.assertEqual(flg, 2)
         self.assertEqual(sg, 7)
         self.assertAlmostEqual(nx, 0.0, places=5)
         self.assertAlmostEqual(ny, 1.0, places=5)
         self.assertAlmostEqual(nz, 0.0, places=5)
+        # FaceData centroid & bounding-sphere radius rebuilt from vertex geometry
+        # (not triangle area 0.5, which is smaller than radius ~0.745356 on small triangles).
+        self.assertAlmostEqual(cx, 1.0 / 3.0, places=5)
+        self.assertAlmostEqual(cy, 0.0, places=5)
+        self.assertAlmostEqual(cz, 1.0 / 3.0, places=5)
+        expected_rad = ((2.0 / 3.0) ** 2 + (1.0 / 3.0) ** 2) ** 0.5
+        self.assertAlmostEqual(rad, expected_rad, places=5)
 
     def test_deduplicates_vertices_and_remaps_triangles_and_faces(self):
         # 2-triangle quad (6 unshared verts -> 4 unique) + 1 vertex with flipped
@@ -729,17 +737,39 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["texture_scale_source"], "default")
             self.assertEqual(cfg["texture_scale_min_size"], 1024)
             self.assertEqual(cfg["texture_scale_min_size_source"], "default")
+            self.assertEqual(cfg["road_smoothness"], 0.5)
+            self.assertEqual(cfg["road_smoothness_source"], "default")
+            self.assertEqual(cfg["road_smooth_sigma"], 4.0)
+            self.assertNotIn("road_smooth", cfg)
 
             # Partial ini marks only specified keys as read from ini.
             ini = os.path.join(root, "ac2ams1.ini")
             with open(ini, "w", encoding="utf-8") as f:
-                f.write("[track]\ntexture_scale=0.25 # quarter\n")
+                f.write("[track]\ntexture_scale=0.25 # quarter\nroad_smoothness=0\n")
             cfg = steam_paths.load_config(root)
             self.assertTrue(cfg["exists"])
             self.assertEqual(cfg["texture_scale"], 0.25)
             self.assertEqual(cfg["texture_scale_source"], "ini")
             self.assertEqual(cfg["texture_scale_min_size"], 1024)
             self.assertEqual(cfg["texture_scale_min_size_source"], "default")
+            self.assertEqual(cfg["road_smoothness"], 0.0)
+            self.assertEqual(cfg["road_smoothness_source"], "ini")
+            self.assertEqual(cfg["road_smooth_sigma"], 0.0)
+
+            # Uniform road_smoothness [0.0, 1.0] -> road_smooth_sigma [0.0, 8.0]
+            # with arbitrary floating-point precision.
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.0), 0.0)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.25), 2.0)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.123456), 0.987648)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.5), 4.0)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.6), 4.8)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(0.75), 6.0)
+            self.assertEqual(steam_paths.road_smoothness_to_sigma(1.0), 8.0)
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\nroad_smoothness=0.62512345\n")
+            cfg = steam_paths.load_config(root)
+            self.assertAlmostEqual(cfg["road_smoothness"], 0.62512345, places=8)
+            self.assertEqual(cfg["road_smooth_sigma"], 5.000988)
 
             # Full ini overrides both defaults.
             with open(ini, "w", encoding="utf-8") as f:
@@ -762,6 +792,108 @@ class StandaloneCliTests(unittest.TestCase):
                 f.write("[track]\ntexture_scale_min_size=-1\n")
             with self.assertRaises(ValueError):
                 steam_paths.load_config(root)
+
+            # Out-of-range / non-finite road_smoothness raises ValueError.
+            for bad in ("-0.1", "1.1", "nan", "inf"):
+                with open(ini, "w", encoding="utf-8") as f:
+                    f.write("[track]\nroad_smoothness=%s\n" % bad)
+                with self.assertRaises(ValueError):
+                    steam_paths.load_config(root)
+
+    def test_patch_tdf_preserves_template_bump_defaults(self):
+        import convert_track
+
+        sample_tdf = (
+            "[TRACKVARS]\n"
+            "RoadBumpAmp=0.010\n"
+            "RoadBumpLen=13.0\n"
+            "RumbleBumpAmp=0.015\n"
+            "RumbleBumpLen=8.0\n"
+            "[FEEDBACK]\n"
+            "Dry=1.00 Wet=0.80 BumpAmp=RoadBumpAmp BumpWavelen=RoadBumpLen\n"
+            "Materials=road\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            tdf_path = os.path.join(root, "terrain.tdf")
+            with open(tdf_path, "w", encoding="utf-8") as f:
+                f.write(sample_tdf)
+
+            patched, applied = convert_track.patch_tdf(tdf_path, {"road": 0.97}, ["road"])
+            self.assertEqual(applied, {"road": 0.97})
+            self.assertIn("Dry=0.970", patched)
+            self.assertIn("RoadBumpAmp=0.010", patched)
+            self.assertIn("RoadBumpLen=13.0", patched)
+            self.assertIn("RumbleBumpAmp=0.015", patched)
+            self.assertIn("RumbleBumpLen=8.0", patched)
+
+    def test_road_smooth_preserves_slope_and_crest_while_damping_micro_bumps(self):
+        import numpy as np
+        import road_smooth
+
+        # Build a 20m x 10m grid (0.5m spacing) with a smooth sloped hill + quadratic crest.
+        xs = np.linspace(0.0, 20.0, 41)
+        zs = np.linspace(0.0, 10.0, 21)
+        gx, gz = np.meshgrid(xs, zs, indexing="ij")
+        nx, nz = gx.shape
+        # Exact quadratic surface: 5% slope + gentle crest + 2% banking.
+        y_true = 0.05 * gx - 0.002 * (gx - 10.0) ** 2 + 0.02 * gz
+        pos_clean = np.column_stack((gx.ravel(), y_true.ravel(), gz.ravel()))
+
+        tris = []
+        for i in range(nx - 1):
+            for j in range(nz - 1):
+                v00 = i * nz + j
+                v10 = (i + 1) * nz + j
+                v01 = i * nz + (j + 1)
+                v11 = (i + 1) * nz + (j + 1)
+                tris.append((v00, v10, v11))
+                tris.append((v00, v11, v01))
+        tris = np.array(tris, dtype=np.int64)
+
+        # 0. sigma=0 disables smoothing completely (returns positions unchanged).
+        sm_zero, st_zero = road_smooth.smooth_positions_mls(pos_clean, tris, sigma=0.0)
+        self.assertEqual(st_zero["smoothed"], 0)
+        self.assertTrue(np.array_equal(sm_zero, pos_clean))
+
+        # 1. Clean quadratic hill/crest/banking must be reproduced with ~0 distortion
+        #    at both default and large sigma.
+        for s in (2.0, 5.0):
+            sm_clean, _ = road_smooth.smooth_positions_mls(pos_clean, tris, sigma=s)
+            self.assertLess(float(np.abs(sm_clean[:, 1] - pos_clean[:, 1]).max()), 1e-4)
+
+        # 2. High-frequency +/-5mm micro-bumps must be strongly damped across the
+        #    surface, and larger sigma must be strictly smoother (monotonic).
+        rng = np.random.default_rng(42)
+        noise = rng.normal(0.0, 0.005, size=len(pos_clean))
+        pos_noisy = pos_clean.copy()
+        pos_noisy[:, 1] += noise
+        sm_2, stats = road_smooth.smooth_positions_mls(pos_noisy, tris, sigma=2.0)
+        sm_4, _ = road_smooth.smooth_positions_mls(pos_noisy, tris, sigma=4.0)
+
+        is_interior = (
+            (gx.ravel() > 1.5) & (gx.ravel() < 18.5)
+            & (gz.ravel() > 1.5) & (gz.ravel() < 8.5)
+        )
+        raw_err = float(np.std(pos_noisy[is_interior, 1] - pos_clean[is_interior, 1]))
+        sm2_err = float(np.std(sm_2[is_interior, 1] - pos_clean[is_interior, 1]))
+        sm4_err = float(np.std(sm_4[is_interior, 1] - pos_clean[is_interior, 1]))
+        self.assertLess(sm2_err, raw_err * 0.4)
+        self.assertLess(sm4_err, sm2_err)
+        # Whole-mesh (including edges) should also be smoother at larger sigma.
+        self.assertLess(
+            float(np.std(sm_4[:, 1] - pos_clean[:, 1])),
+            float(np.std(sm_2[:, 1] - pos_clean[:, 1])),
+        )
+        self.assertGreater(stats["smoothed"], 0)
+
+        # 3. Overpass 6m above must not bleed into lower road even at large sigma.
+        upper = pos_clean.copy()
+        upper[:, 1] += 6.0
+        both_pos = np.vstack((pos_clean, upper))
+        both_tris = np.vstack((tris, tris + len(pos_clean)))
+        for s in (2.0, 5.0):
+            sm_both, _ = road_smooth.smooth_positions_mls(both_pos, both_tris, sigma=s)
+            self.assertLess(float(np.abs(sm_both[:, 1] - both_pos[:, 1]).max()), 1e-4)
 
 
 if __name__ == "__main__":

@@ -40,10 +40,15 @@ pass through unchanged; unknown formats fail explicitly.
 swaps Y (`2/3`) vs Z (`4/5`) in `FaceData.flags` (because `TPoint3D(X, Z, Y)`
 already swaps Y and Z before `AddXZYas021` swaps them again), giving flat road
 triangles horizontal `+Z` collision normals and flag `4` instead of upward `+Y`
-and flag `2`. Verified 100% against official ISI `Joesville` GMTs (`7842/7842`
-faces on `RaceSurface_01.gmt`), `gmt_rf1.py` now rebuilds `NormalData` and
-`FaceData.flags` directly from triangle vertex geometry (`-cross(p1-p0, p2-p0)`)
-during conversion, and generates double-sided `xpitin`/`xpitout` quads.
+and flag `2`. It also writes triangle area instead of face bounding-sphere radius
+(`max(||p_i - centroid||)`) into `FaceData`'s 4th float; on dense laser-scanned
+road meshes (e.g. `ks_laguna_seca`, where 99.67% of road triangles have
+`area < radius` with median ratio `0.333`), AMS1's HAT bounding-sphere test
+rejects triangle edges/corners and produces severe artificial bumpiness. Verified
+100% against official ISI `Joesville` and stock AMS1 `DeLaSarthe`/`2014Kyalami`
+GMTs, `gmt_rf1.py` now rebuilds `NormalData`, `FaceData.flags`, `FaceData`
+centroids, and `FaceData` bounding-sphere radii directly from triangle vertex
+geometry during conversion, and generates double-sided `xpitin`/`xpitout` quads.
 
 ## Location structure and terrain
 

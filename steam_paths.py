@@ -21,6 +21,7 @@ environment variables (AC2AMS_GAME_DIR, AC2AMS_AC_DIR, AC2AMS_TEXCONV,
 AC2AMS_BLENDER, AC2AMS_ENCRYPTOR) can override any path.
 """
 import configparser
+import math
 import os
 import re
 import sys
@@ -31,6 +32,24 @@ DEFAULT_ENCRYPTOR = r"D:\Mods\Automobilista\Tools\rfactortools-0.3.1.win32\rfact
 INI_NAME = "ac2ams1.ini"
 DEFAULT_TEXTURE_SCALE = 0.5
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
+DEFAULT_ROAD_SMOOTHNESS = 0.5
+
+
+def road_smoothness_to_sigma(smoothness):
+    """Map normalized road_smoothness in [0.0, 1.0] uniformly to sigma in [0.0, 8.0] m.
+
+      0.0 -> 0.0m (disabled)
+      0.5 -> 4.0m (default)
+      1.0 -> 8.0m (max)
+    """
+    value = float(smoothness)
+    if not math.isfinite(value) or not (0.0 <= value <= 1.0):
+        raise ValueError(
+            "road_smoothness must be between 0.0 and 1.0, got %r" % (smoothness,)
+        )
+    if value == 0.0:
+        return 0.0
+    return round(value * 8.0, 6)
 
 
 def app_dir():
@@ -155,6 +174,9 @@ def load_config(base_dir=None):
         "texture_scale_source": "default",
         "texture_scale_min_size": DEFAULT_TEXTURE_SCALE_MIN_SIZE,
         "texture_scale_min_size_source": "default",
+        "road_smoothness": DEFAULT_ROAD_SMOOTHNESS,
+        "road_smoothness_source": "default",
+        "road_smooth_sigma": road_smoothness_to_sigma(DEFAULT_ROAD_SMOOTHNESS),
     }
     if not os.path.isfile(ini_path):
         return result
@@ -195,6 +217,22 @@ def load_config(base_dir=None):
             )
         result["texture_scale_min_size"] = min_size
         result["texture_scale_min_size_source"] = "ini"
+    if parser.has_option("track", "road_smoothness"):
+        raw = parser.get("track", "road_smoothness").strip()
+        try:
+            smoothness = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "[track] road_smoothness must be a number, got %r" % (raw,)
+            ) from exc
+        if not math.isfinite(smoothness) or not (0.0 <= smoothness <= 1.0):
+            raise ValueError(
+                "[track] road_smoothness must be between 0.0 and 1.0, got %r"
+                % (smoothness,)
+            )
+        result["road_smoothness"] = smoothness
+        result["road_smoothness_source"] = "ini"
+        result["road_smooth_sigma"] = road_smoothness_to_sigma(smoothness)
     return result
 
 

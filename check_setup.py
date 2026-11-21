@@ -132,7 +132,8 @@ def check_blender(rep, blender):
 
 
 def check(track_dir=None, layout=None, blender=None, install=None,
-          need_blender=True, texture_scale=None, texture_scale_min_size=None):
+          need_blender=True, texture_scale=None, texture_scale_min_size=None,
+          road_smoothness=None):
     """Print one line per check; True when nothing is missing."""
     import steam_paths
     rep = Report()
@@ -153,10 +154,21 @@ def check(track_dir=None, layout=None, blender=None, install=None,
             tag = "from ini" if src == "ini" else "default"
             return "%s=%s [%s]" % (key, cfg_val if cli_val is None else cli_val, tag)
 
-        summary = ", ".join((
+        active_smoothness = (
+            cfg["road_smoothness"] if road_smoothness is None else road_smoothness
+        )
+        eff_sigma = steam_paths.road_smoothness_to_sigma(active_smoothness)
+        smooth_fmt = _fmt("road_smoothness", road_smoothness)
+        if eff_sigma == 0.0:
+            smooth_fmt += " (effective road_smooth_sigma=0.0, disabled)"
+        else:
+            smooth_fmt += " (effective road_smooth_sigma=%sm)" % eff_sigma
+        parts = [
             _fmt("texture_scale", texture_scale),
             _fmt("texture_scale_min_size", texture_scale_min_size),
-        ))
+            smooth_fmt,
+        ]
+        summary = ", ".join(parts)
         if cfg["exists"]:
             rep.ok("config         %s (%s)" % (cfg["path"], summary))
         else:

@@ -42,6 +42,7 @@ Common options:
 - `--hour HH:MM` — session start time (default `12:00`).
 - `--texture-scale <0..1>` — texture resolution scale per dimension (overrides `ac2ams1.ini`; default `0.5`).
 - `--texture-scale-min-size <px>` — minimum `max(width, height)` (inclusive) to scale textures (overrides `ac2ams1.ini`; default `1024`, so `1024x1024`+ are scaled while `512x512` and smaller are kept unscaled).
+- `--road-smoothness <0..1>` — C2 triweight quadratic MLS Y-smoothing strength for physical road meshes (overrides `ac2ams1.ini`; default `0.5`). Mapped uniformly to effective `road_smooth_sigma` in `[0m, 8m]` (`0.0` disables smoothing, `0.5 -> 4m` default, `1.0 -> 8m` max).
 - `--jobs <n>` — number of parallel Blender and texture conversion workers.
 - `--skip-geometry` — reuse previously exported GMT meshes in `work\<track>\gmt\`.
 - `--install "<dir>"` — override the automatic install destination (defaults to `out\` next to `ac2ams1.exe`).
@@ -82,7 +83,7 @@ All tool and data paths are resolved relative to `ac2ams1.exe`:
 | Path | Contents / Purpose |
 | --- | --- |
 | `ac2ams1.exe` | Single executable bundling **Python 3.10**, **NumPy**, and the AC-to-AMS1 converter scripts (`build_track`, `convert_multiple_tracks`, `check_setup`, `verify_install`, and all conversion stages). |
-| `ac2ams1.ini` | Configuration file read from the same folder as `ac2ams1.exe` (`[track]` `texture_scale=0.5`, `texture_scale_min_size=1024`). |
+| `ac2ams1.ini` | Configuration file read from the same folder as `ac2ams1.exe` (`[track]` `texture_scale`, `texture_scale_min_size`, `road_smoothness`). |
 | `tools\blender\` | Portable **Blender 3.6 LTS** (`blender.exe`) with the **rFactor 2 GMT Exporter add-on (`io_rf2_gmt_release`)** pre-installed under `3.6\scripts\addons\io_rf2_gmt_release\`. |
 | `tools\blender_scripts\` | Plain Python scripts executed inside Blender's own interpreter (`blender_stage.py`, `kn5.py`, `backdrop.py`). |
 | `tools\texconv\texconv.exe` | **Microsoft DirectXTex `texconv.exe`** for DX9 power-of-two DDS conversion, mipmap generation, multilayer material baking, and loading screen / minimap composition. |
