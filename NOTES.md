@@ -109,3 +109,16 @@ The trace's `BoxerCup_33.veh` warning is separate from the track. Two files
 with that basename exist under `BoxerCup\Teams\BoxerTeam11` and
 `BoxerCup\Teams\BoxerTeam7`; the track converter does not install vehicle
 files.
+
+## Instance name length limit (exit-to-menu crash)
+
+AMS1's scene `Instance` struct stores the `Instance=` name in a fixed 32-byte
+buffer (`+0x1e8..+0x207`) immediately followed by a linked-list head pointer at
+`+0x208`. Parsing an `Instance=` name longer than 31 characters overflows past
+the buffer; names of 33+ characters overwrite `+0x208` with ASCII bytes (e.g.
+`pitstop__metal_fence_extruded_001_SUB0` writes `'1_SU'` = `0x55535f31`,
+`corkscrew_traliccio_fili_001_SUB1` writes `'1\0'` = `0x00000031`). The track
+loads and drives normally, then crashes with `0xc0000005` at `AMS.exe+0x0000b552`
+inside `VidMan::Post()` when exiting to the menu. `finalize_track.py` now caps
+`Instance=` names to 31 characters via `instance_identifier()` while keeping
+`MeshFile=` filenames intact, and `verify_install.py` checks the limit.

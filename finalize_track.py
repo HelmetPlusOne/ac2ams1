@@ -139,6 +139,32 @@ GDB = """{layout}
 # direction we used before when a track says nothing.
 FALLBACK_SUN = (0.25, -0.95, 0.18)
 MAX_LAYOUT_ID_LENGTH = 16
+# AMS1's TInstance struct holds a 32-byte name buffer right before a linked-list
+# pointer (+0x208). Instance= names > 31 chars overflow into that pointer and
+# crash AMS.exe+0x0000b552 inside VidMan::Post() when exiting a track.
+MAX_INSTANCE_NAME_LENGTH = 31
+
+
+def instance_identifier(name, used=None):
+    """Keep SCN Instance= names within AMS1's 31-char limit (+ NUL = 32 bytes)."""
+    if len(name) <= MAX_INSTANCE_NAME_LENGTH and (
+        used is None or name.casefold() not in used
+    ):
+        if used is not None:
+            used.add(name.casefold())
+        return name
+    digest = hashlib.sha1(name.casefold().encode("utf-8")).hexdigest()[:8]
+    prefix = name[:MAX_INSTANCE_NAME_LENGTH - 9].rstrip("_") or "inst"
+    cand = "%s_%s" % (prefix, digest)
+    if used is not None:
+        counter = 2
+        while cand.casefold() in used:
+            tag = "_%d_%s" % (counter, digest[:6])
+            base = name[:MAX_INSTANCE_NAME_LENGTH - len(tag)].rstrip("_") or "inst"
+            cand = base + tag
+            counter += 1
+        used.add(cand.casefold())
+    return cand
 
 
 def layout_identifier(venue):
@@ -773,9 +799,10 @@ def main():
                                amb=args.ambient, sun=args.sun,
                                sx=sx, sy=sy, sz=sz,
                                skybox=skybox)]
+    used_instances = {"skyboxi", "clouds", "sky", "xpitin", "xpitout"}
     phys = 0
     for row in exported:
-        name = os.path.splitext(row["gmt"])[0]
+        name = instance_identifier(os.path.splitext(row["gmt"])[0], used_instances)
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
