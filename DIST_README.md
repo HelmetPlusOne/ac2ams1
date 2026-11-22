@@ -10,11 +10,12 @@ Converted tracks are automatically installed into the `out\` folder next to
 
 ## Changelog
 
-### TBD
+### 22 Nov 2026
 
 - **MultiMap alpha and colour-tint fix (e.g. Union Island wooden houses)**: Fixed `ksPerPixelMultiMap*` / `ksPerPixelMultiMap_AT_NMDetail` materials reading their alpha-test channel from `txDiffuse.a` (the AC detail-blend mask) instead of `txNormal.a`, which made painted house walls completely transparent; and baked flat-colour `txDetail` tints directly using AC's `lerp(txDiffuse, txDiffuse * txDetail, 1 - txDiffuse.a)` formula (including plain `ksPerPixelMultiMap` with `useDetail=1`) so tinted walls, roofs, and props keep their bright colours instead of turning grey.
 - **Tolerant AC `.ini` parsing (e.g. Riverside `surfaces.ini`)**: Updated track and camera `.ini` readers to handle UTF-8 BOMs, `//` comment lines, and preamble lines before the first `[SECTION]` header (such as Riverside's leading `V1.0` line) instead of failing with `MissingSectionHeaderError`.
 - **Long texture filename cap (e.g. Bathurst `rt_bathurst`)**: Deterministically shortened extracted and derived `.dds` texture filenames to at most 58 characters (preserving suffixes such as `_a102`, `_d80`, `_baked`, `_base`) so Blender and the GMT exporter never truncate names past the 62-character GMT limit and cause AMS1 `Error loading texture ...` failures; updated `verify_install.py` to parse GMT material texture entries directly so truncated names are caught.
+- **Skinned KN5 mesh parsing fix (e.g. COTA `fn_cota` marshals)**: Fixed `kn5.py` parsing of skinned mesh nodes (`type == 3`) to read `cast_shadows`/`visible`/`transparent` before the bone table and stop after `lod_out` (without over-reading regular-mesh bounding-sphere/renderable bytes).
 
 ### 21 Nov 2026
 
