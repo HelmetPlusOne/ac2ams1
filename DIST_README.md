@@ -13,6 +13,7 @@ Converted tracks are automatically installed into the `out\` folder next to
 ### TBD
 
 - **MultiMap alpha and colour-tint fix (e.g. Union Island wooden houses)**: Fixed `ksPerPixelMultiMap*` / `ksPerPixelMultiMap_AT_NMDetail` materials reading their alpha-test channel from `txDiffuse.a` (the AC detail-blend mask) instead of `txNormal.a`, which made painted house walls completely transparent; and baked flat-colour `txDetail` tints directly using AC's `lerp(txDiffuse, txDiffuse * txDetail, 1 - txDiffuse.a)` formula (including plain `ksPerPixelMultiMap` with `useDetail=1`) so tinted walls, roofs, and props keep their bright colours instead of turning grey.
+- **Tolerant AC `.ini` parsing (e.g. Riverside `surfaces.ini`)**: Updated track and camera `.ini` readers to handle UTF-8 BOMs, `//` comment lines, and preamble lines before the first `[SECTION]` header (such as Riverside's leading `V1.0` line) instead of failing with `MissingSectionHeaderError`.
 
 ### 21 Nov 2026
 

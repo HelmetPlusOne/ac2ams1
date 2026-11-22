@@ -930,6 +930,36 @@ class StandaloneCliTests(unittest.TestCase):
         self.assertNotEqual(first.casefold(), second.casefold())
         self.assertLessEqual(len(second), finalize_track.MAX_INSTANCE_NAME_LENGTH)
 
+    def test_read_ini_and_cameras_tolerate_preamble_and_bom(self):
+        import convert_track
+        import make_cam
+
+        with tempfile.TemporaryDirectory() as root:
+            surf = os.path.join(root, "surfaces.ini")
+            with open(surf, "wb") as f:
+                f.write(
+                    b"\xef\xbb\xbfV1.0\r\n"
+                    b"[SURFACE_0]\r\n"
+                    b"// comment\r\n"
+                    b"KEY=ROAD\r\n"
+                    b"FRICTION=0.97\r\n"
+                )
+            cp = convert_track.read_ini(surf)
+            self.assertEqual(cp["SURFACE_0"]["KEY"], "ROAD")
+            self.assertEqual(cp["SURFACE_0"]["FRICTION"], "0.97")
+
+            cam = os.path.join(root, "cameras.ini")
+            with open(cam, "wb") as f:
+                f.write(
+                    b"\xef\xbb\xbfV1.0\r\n"
+                    b"[CAMERA_0]\r\n"
+                    b"POSITION=1,2,3\r\n"
+                    b"FORWARD=0,0,1\r\n"
+                )
+            cams = make_cam.read_cameras(root)
+            self.assertEqual(len(cams), 1)
+            self.assertEqual(cams[0]["pos"], [-1.0, 2.0, 3.0])
+
 
 if __name__ == "__main__":
     unittest.main()
