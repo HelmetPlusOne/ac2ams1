@@ -10,6 +10,10 @@ Converted tracks are automatically installed into the `out\` folder next to
 
 ## Changelog
 
+### TBD
+
+- **MultiMap alpha and colour-tint fix (e.g. Union Island wooden houses)**: Fixed `ksPerPixelMultiMap*` / `ksPerPixelMultiMap_AT_NMDetail` materials reading their alpha-test channel from `txDiffuse.a` (the AC detail-blend mask) instead of `txNormal.a`, which made painted house walls completely transparent; and baked flat-colour `txDetail` tints directly using AC's `lerp(txDiffuse, txDiffuse * txDetail, 1 - txDiffuse.a)` formula (including plain `ksPerPixelMultiMap` with `useDetail=1`) so tinted walls, roofs, and props keep their bright colours instead of turning grey.
+
 ### 21 Nov 2026
 
 - **Configuration file support (`ac2ams1.ini`)**: Added INI configuration next to `ac2ams1.exe` (`[track]` `texture_scale`, `texture_scale_min_size`, and `road_smoothness`), with matching CLI overrides and clear startup reporting of whether each value came from `ac2ams1.ini`, defaults, or CLI flags.
