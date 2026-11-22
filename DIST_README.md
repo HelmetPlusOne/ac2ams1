@@ -8,6 +8,18 @@ Converted tracks are automatically installed into the `out\` folder next to
 `ac2ams1.exe`. To play a converted track in AMS1, copy `out\<track>\` into
 `<Automobilista>\GameData\Locations\`.
 
+## Changelog
+
+### 21 Nov 2026
+
+- **Configuration file support (`ac2ams1.ini`)**: Added INI configuration next to `ac2ams1.exe` (`[track]` `texture_scale`, `texture_scale_min_size`, and `road_smoothness`), with matching CLI overrides and clear startup reporting of whether each value came from `ac2ams1.ini`, defaults, or CLI flags.
+- **Road surface smoothness**: Added C2 triweight quadratic MLS Y-smoothing for physical road meshes via `road_smoothness` (`0.0`–`1.0`, default `0.5` -> `4.0m` effective `road_smooth_sigma`, `0.0` disables), and fixed AMS1/rF1 GMT face bounding-sphere radii so laser-scanned AC tracks drive smoothly without excessive high-frequency bumpiness.
+- **Exit-to-menu crash fix**: Shortened `.scn` `Instance=` names longer than 31 characters (keeping `MeshFile=` intact) to prevent AMS1 from overflowing its 32-byte instance name buffer and crashing when returning to the main menu.
+
+### 20 Nov 2026
+
+- Initial version.
+
 ## Usage
 
 ### 1. Drag and Drop (Windows Explorer)
@@ -109,7 +121,7 @@ governed by its own license:
 | **DirectXTex `texconv.exe`** | `tools\texconv\texconv.exe` | **MIT License** — Microsoft Corporation (https://github.com/microsoft/DirectXTex/blob/main/LICENSE). This copy was taken from rFactor 2's `Support\Tools\MapConverter\` folder and can also be obtained directly from Microsoft's DirectXTex GitHub releases. |
 | **rfactortools (`rfactorcrypt.exe`)** | `tools\rfactortools\` | **GNU GPL v3** — full license text included in `tools\rfactortools\COPYING.txt`. Source: https://github.com/Grumbel/rfactortools |
 
-This converter is based on the code from https://github.com/Mewzapchu/ac-to-rf2.
+This converter is based on the code from https://github.com/Mewzapchu/ac-to-rf2 ([license](https://github.com/HelmetPlusOne/ac2ams1/blob/master/LICENSE)).
 
 ## Included Game Files (Assetto Corsa & Automobilista 1)
 
