@@ -759,12 +759,14 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smoothness"], 0.5)
             self.assertEqual(cfg["road_smoothness_source"], "default")
             self.assertEqual(cfg["road_smooth_sigma"], 4.0)
+            self.assertEqual(cfg["mesh_coarsening"], 0.0)
+            self.assertEqual(cfg["mesh_coarsening_source"], "default")
             self.assertNotIn("road_smooth", cfg)
 
             # Partial ini marks only specified keys as read from ini.
             ini = os.path.join(root, "ac2ams1.ini")
             with open(ini, "w", encoding="utf-8") as f:
-                f.write("[track]\ntexture_scale=0.25 # quarter\nroad_smoothness=0\n")
+                f.write("[track]\ntexture_scale=0.25 # quarter\nroad_smoothness=0\nmesh_coarsening=0.6\n")
             cfg = steam_paths.load_config(root)
             self.assertTrue(cfg["exists"])
             self.assertEqual(cfg["texture_scale"], 0.25)
@@ -774,6 +776,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smoothness"], 0.0)
             self.assertEqual(cfg["road_smoothness_source"], "ini")
             self.assertEqual(cfg["road_smooth_sigma"], 0.0)
+            self.assertEqual(cfg["mesh_coarsening"], 0.6)
+            self.assertEqual(cfg["mesh_coarsening_source"], "ini")
 
             # Uniform road_smoothness [0.0, 1.0] -> road_smooth_sigma [0.0, 8.0]
             # with arbitrary floating-point precision.
@@ -816,6 +820,13 @@ class StandaloneCliTests(unittest.TestCase):
             for bad in ("-0.1", "1.1", "nan", "inf"):
                 with open(ini, "w", encoding="utf-8") as f:
                     f.write("[track]\nroad_smoothness=%s\n" % bad)
+                with self.assertRaises(ValueError):
+                    steam_paths.load_config(root)
+
+            # Out-of-range / non-finite mesh_coarsening raises ValueError.
+            for bad in ("-0.01", "1.01", "nan", "inf", "abc"):
+                with open(ini, "w", encoding="utf-8") as f:
+                    f.write("[track]\nmesh_coarsening=%s\n" % bad)
                 with self.assertRaises(ValueError):
                     steam_paths.load_config(root)
 
@@ -1174,6 +1185,220 @@ class StandaloneCliTests(unittest.TestCase):
 
             self.assertEqual(len(seen_cmds), 1)
             self.assertEqual(os.path.getsize(bad), 176)
+
+    def test_mesh_coarsening_role_classification_and_monotonic_ratios(self):
+        import mesh_coarsen
+
+        # Skipped roles: tiny meshes, backdrops, timing, non-rendered non-physical.
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": True, "physical": False, "tris": 32}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": True, "physical": False, "backdrop": True, "tris": 500}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": False, "physical": True, "timing": True, "tris": 500}))
+        self.assertIsNone(mesh_coarsen.classify_mesh_role(
+            {"render": False, "physical": False, "tris": 500}))
+
+        # Active roles.
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": False, "physical": True, "surface": "ROAD", "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": True, "surface": "GRASS", "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": False, "physical": True, "surface": "WALL", "tris": 500}),
+            "collision_offtrack",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": False, "physical": True, "surface": "GRASS", "tris": 500}),
+            "collision_offtrack",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "decal": True, "tris": 500}),
+            "road_physical",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "track_surface": True, "tris": 500}),
+            "track_visual",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_mesh_role(
+                {"render": True, "physical": False, "track_surface": False, "tris": 500}),
+            "scenery",
+        )
+
+        # Disabled at 0.0; strictly decreasing (stronger coarsening) as c -> 1.0.
+        for role, expected_min in mesh_coarsen.ROLE_MIN_RATIO.items():
+            self.assertEqual(mesh_coarsen.coarsen_ratio(0.0, role), 1.0)
+            r25 = mesh_coarsen.coarsen_ratio(0.25, role)
+            r50 = mesh_coarsen.coarsen_ratio(0.50, role)
+            r75 = mesh_coarsen.coarsen_ratio(0.75, role)
+            r100 = mesh_coarsen.coarsen_ratio(1.0, role)
+            self.assertTrue(1.0 > r25 > r50 > r75 > r100 == expected_min)
+
+        # Invalid coarsening values raise ValueError.
+        for bad in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                mesh_coarsen.coarsen_ratio(bad, "scenery")
+
+        # Early no-op guard returns input unchanged without needing Blender.
+        v = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        u = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+        f = [(0, 1, 2)]
+        n = [(0.0, 0.0, 1.0)] * 3
+        self.assertEqual(mesh_coarsen.coarsen_geometry(v, u, f, n, 1.0), (v, u, f, n))
+        self.assertEqual(mesh_coarsen.coarsen_geometry(v, u, f, n, 0.5), (v, u, f, n))
+
+    def test_normal_dedup_scales_with_mesh_coarsening_and_preserves_creases(self):
+        # 0.0 preserves legacy 500.0 quantization; higher coarsening loosens monotonically.
+        self.assertEqual(gmt_rf1.normal_dedup_quant(0.0), gmt_rf1.DEFAULT_NORMAL_QUANT)
+        q25 = gmt_rf1.normal_dedup_quant(0.25)
+        q50 = gmt_rf1.normal_dedup_quant(0.50)
+        q75 = gmt_rf1.normal_dedup_quant(0.75)
+        q100 = gmt_rf1.normal_dedup_quant(1.0)
+        self.assertTrue(gmt_rf1.DEFAULT_NORMAL_QUANT > q25 > q50 > q75 > q100 > 6.0)
+        for bad in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                gmt_rf1.normal_dedup_quant(bad)
+
+        # Build 3 vertices at the same (pos, uv):
+        #   v0: normal (0, 1, 0)
+        #   v1: normal tilted ~2.5 deg (sin=0.0436, cos=0.9990) -> smooth jitter
+        #   v2: normal tilted 90 deg (1, 0, 0) -> hard architectural crease
+        import math
+        a = math.radians(2.5)
+        verts = (
+            struct.pack("<6f2I", 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 0xFFFFFFFF, 0)
+            + struct.pack("<6f2I", 1.0, 2.0, 3.0, math.sin(a), math.cos(a), 0.0, 0xFFFFFFFF, 0)
+            + struct.pack("<6f2I", 1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0xFFFFFFFF, 0)
+        )
+        uvs = struct.pack("<8f", 0.25, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) * 3
+
+        # At coarsening=0.0 (K=500): all 3 remain separate (legacy behavior).
+        q0 = gmt_rf1.normal_dedup_quant(0.0)
+        _, _, _, vc0, _ = gmt_rf1._dedup_mesh_vertices(verts, uvs, None, 3, normal_quant=q0)
+        self.assertEqual(vc0, 3)
+
+        # At coarsening=1.0 (K~=7.16, ~8 deg): v0 and v1 merge, 90 deg crease v2 stays split!
+        nv_fast, nu_fast, _, vc_fast, rm_fast = gmt_rf1._dedup_mesh_vertices(
+            verts, uvs, None, 3, normal_quant=q100)
+        self.assertEqual(vc_fast, 2)
+        self.assertEqual(int(rm_fast[0]), int(rm_fast[1]))
+        self.assertNotEqual(int(rm_fast[0]), int(rm_fast[2]))
+
+        # NumPy and pure-Python paths must stay byte-for-byte identical.
+        with mock.patch.object(gmt_rf1, "_np", None):
+            nv_py, nu_py, _, vc_py, rm_py = gmt_rf1._dedup_mesh_vertices(
+                verts, uvs, None, 3, normal_quant=q100)
+        self.assertEqual((nv_fast, nu_fast, vc_fast, list(rm_fast)),
+                         (nv_py, nu_py, vc_py, list(rm_py)))
+
+    def test_billboard_card_thinning_spatial_uniformity_and_determinism(self):
+        import mesh_coarsen
+
+        # Role classification: only visual non-physical ksGrass / ksTree >= MIN_TRIS.
+        self.assertEqual(
+            mesh_coarsen.classify_billboard_role(
+                {"render": True, "physical": False, "shader": "ksGrass", "tris": 200}),
+            "grass_cards",
+        )
+        self.assertEqual(
+            mesh_coarsen.classify_billboard_role(
+                {"render": True, "physical": False, "shader": "ksTree", "tris": 200}),
+            "tree_cards",
+        )
+        for skipped in (
+            {"render": True, "physical": False, "shader": "ksPerPixelAT", "tris": 200},
+            {"render": True, "physical": False, "shader": "ksGrass", "tris": 32},
+            {"render": True, "physical": True, "shader": "ksGrass", "tris": 200},
+            {"render": True, "physical": False, "shader": "ksTree", "backdrop": True, "tris": 200},
+            {"render": True, "physical": False, "shader": "ksTree", "decal": True, "tris": 200},
+        ):
+            self.assertIsNone(mesh_coarsen.classify_billboard_role(skipped))
+
+        # Monotonic keep ratios.
+        for role, (min_keep, _max_c) in mesh_coarsen.BILLBOARD_ROLES.items():
+            self.assertEqual(mesh_coarsen.billboard_keep_ratio(0.0, role), 1.0)
+            k50 = mesh_coarsen.billboard_keep_ratio(0.5, role)
+            k100 = mesh_coarsen.billboard_keep_ratio(1.0, role)
+            self.assertTrue(1.0 > k50 > k100 == min_keep)
+
+        # Build 10x10 grid of 100 disconnected 2-tri grass quads (200 tris).
+        verts, uvs, faces, norms = [], [], [], []
+        for gx in range(10):
+            for gz in range(10):
+                x0, z0 = gx * 5.0, gz * 5.0
+                o = len(verts)
+                verts.extend([
+                    (x0, 0.0, z0), (x0 + 1.0, 0.0, z0),
+                    (x0 + 1.0, 1.0, z0), (x0, 1.0, z0),
+                ])
+                uvs.extend([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+                norms.extend([(0.0, 1.0, 0.0)] * 4)
+                faces.extend([(o, o + 1, o + 2), (o, o + 2, o + 3)])
+
+        # c=0.0 -> untouched
+        self.assertEqual(
+            mesh_coarsen.thin_billboard_cards(verts, uvs, faces, norms, 1.0),
+            (verts, uvs, faces, norms),
+        )
+        # c=0.5 (keep=0.65) and c=1.0 (keep=0.30): deterministic & monotonic
+        v50, u50, f50, n50 = mesh_coarsen.thin_billboard_cards(
+            verts, uvs, faces, norms, mesh_coarsen.billboard_keep_ratio(0.5, "grass_cards"),
+            max_comp_tris=16,
+        )
+        v100, u100, f100, n100 = mesh_coarsen.thin_billboard_cards(
+            verts, uvs, faces, norms, mesh_coarsen.billboard_keep_ratio(1.0, "grass_cards"),
+            max_comp_tris=16,
+        )
+        v100_b, u100_b, f100_b, n100_b = mesh_coarsen.thin_billboard_cards(
+            verts, uvs, faces, norms, mesh_coarsen.billboard_keep_ratio(1.0, "grass_cards"),
+            max_comp_tris=16,
+        )
+        self.assertEqual((v100, u100, f100, n100), (v100_b, u100_b, f100_b, n100_b))
+        self.assertEqual(len(f50), 130)   # 65 quads * 2 tris
+        self.assertEqual(len(f100), 60)   # 30 quads * 2 tris
+        self.assertEqual(len(u100), len(v100))
+        self.assertEqual(len(n100), len(v100))
+        # Spatial uniformity: all 4 quadrants of the 10x10 grid retain cards.
+        quads = [0, 0, 0, 0]
+        for a, b, c in f100:
+            cx = (v100[a][0] + v100[b][0] + v100[c][0]) / 3.0
+            cz = (v100[a][2] + v100[b][2] + v100[c][2]) / 3.0
+            q = (1 if cx >= 25.0 else 0) + (2 if cz >= 25.0 else 0)
+            quads[q] += 1
+        for count in quads:
+            self.assertGreaterEqual(count, 10)  # each quadrant keeps >= 5 quads
+
+        # Crossed 4-tri X-trees sharing center axis vertices stay whole (divisible by 4).
+        xv, xu, xf, xn = [], [], [], []
+        for k in range(40):
+            x0, z0 = (k % 8) * 10.0, (k // 8) * 10.0
+            o = len(xv)
+            # Plane 1 + Plane 2 sharing center spine (x0, 0..4, z0)
+            xv.extend([
+                (x0 - 1.0, 0.0, z0), (x0, 0.0, z0), (x0, 4.0, z0), (x0 - 1.0, 4.0, z0),
+                (x0, 0.0, z0), (x0 + 1.0, 0.0, z0), (x0 + 1.0, 4.0, z0), (x0, 4.0, z0),
+            ])
+            xu.extend([(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)] * 2)
+            xn.extend([(0.0, 1.0, 0.0)] * 8)
+            xf.extend([
+                (o, o + 1, o + 2), (o, o + 2, o + 3),
+                (o + 4, o + 5, o + 6), (o + 4, o + 6, o + 7),
+            ])
+        _, _, xf50, _ = mesh_coarsen.thin_billboard_cards(
+            xv, xu, xf, xn, 0.5, max_comp_tris=128)
+        self.assertEqual(len(xf50), 80)  # 20 whole 4-tri X-trees kept
+        self.assertEqual(len(xf50) % 4, 0)
 
 
 if __name__ == "__main__":

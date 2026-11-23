@@ -120,7 +120,7 @@ def write_clear_texture(path):
         f.write(bytes(16))
 
 
-GEOMETRY_LINES = ("EXPORTED", "backdrop", "materials prepared", "!!")
+GEOMETRY_LINES = ("EXPORTED", "backdrop", "coarsen", "materials prepared", "!!")
 
 
 def blender_stage(pre, post, gmt_dir, jobs):
@@ -256,6 +256,8 @@ def main():
                     help="minimum max(w, h) (inclusive) to scale textures and destination floor bound (overrides ac2ams1.ini [track] texture_scale_min_size; default 1024)")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; overrides ac2ams1.ini [track] road_smoothness)")
+    ap.add_argument("--mesh-coarsening", type=float, default=None,
+                    help="deterministic Blender mesh coarsening in [0.0, 1.0] (0.0 disables, 1.0 strongest safe coarsening; overrides ac2ams1.ini [track] mesh_coarsening)")
     ap.add_argument("--grain", default="2")
     ap.add_argument("--detail-metres", default="2.0",
                     help="how often the game repeats a second stage detail texture")
@@ -317,6 +319,13 @@ def main():
             steam_paths.road_smoothness_to_sigma(args.road_smoothness)
         except ValueError as exc:
             raise SystemExit("--road-smoothness: %s" % exc)
+    if args.mesh_coarsening is None:
+        args.mesh_coarsening = config["mesh_coarsening"]
+    else:
+        try:
+            args.mesh_coarsening = steam_paths.validate_mesh_coarsening(args.mesh_coarsening)
+        except ValueError as exc:
+            raise SystemExit("--mesh-coarsening: %s" % exc)
 
     if not args.blender:
         args.blender = steam_paths.BLENDER
@@ -352,7 +361,8 @@ def main():
                              args.install, need_blender=not reuse,
                              texture_scale=args.texture_scale,
                              texture_scale_min_size=args.texture_scale_min_size,
-                             road_smoothness=args.road_smoothness):
+                             road_smoothness=args.road_smoothness,
+                             mesh_coarsening=args.mesh_coarsening):
         raise SystemExit(1)
     print("\nconverting %s" % track)
 
@@ -401,7 +411,8 @@ def main():
         log = blender_stage(
             [args.blender, "--background", "--factory-startup", "--python",
              steam_paths.BLENDER_STAGE, "--", os.path.join(out, "material_map.json")],
-            ["--diffuse", args.diffuse, "--ambient", args.ambient, "--gain", args.gain],
+            ["--diffuse", args.diffuse, "--ambient", args.ambient, "--gain", args.gain,
+             "--coarsening", repr(args.mesh_coarsening)],
             gmt_dir, args.jobs)
 
     # Blender can fail without a non-zero exit code, so check the result rather
@@ -418,7 +429,8 @@ def main():
     step(7, "scene, database and install")
     cmd = stage_cmd("finalize_track.py", out, "--hour", args.hour,
                     "--ambient", args.scene_ambient,
-                    "--road-smoothness", repr(args.road_smoothness))
+                    "--road-smoothness", repr(args.road_smoothness),
+                    "--mesh-coarsening", repr(args.mesh_coarsening))
     preview = track_preview(args.track_dir, args.layout)
     if preview:
         cmd += ["--preview", preview, "--texconv", steam_paths.TEXCONV]

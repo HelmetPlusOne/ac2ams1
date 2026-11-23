@@ -717,6 +717,8 @@ def main():
                     help="path to texconv.exe for converting menu images")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; default from ac2ams1.ini / 0.5)")
+    ap.add_argument("--mesh-coarsening", type=float, default=None,
+                    help="mesh coarsening strength in [0.0, 1.0] (controls rF1 vertex normal dedup tolerance; default from ac2ams1.ini / 0.0)")
     args = ap.parse_args()
 
     import steam_paths
@@ -730,6 +732,12 @@ def main():
         eff_road_smooth_sigma = steam_paths.road_smoothness_to_sigma(args.road_smoothness)
     except ValueError as exc:
         raise SystemExit("--road-smoothness: %s" % exc)
+    if args.mesh_coarsening is None:
+        args.mesh_coarsening = _cfg["mesh_coarsening"]
+    try:
+        args.mesh_coarsening = steam_paths.validate_mesh_coarsening(args.mesh_coarsening)
+    except ValueError as exc:
+        raise SystemExit("--mesh-coarsening: %s" % exc)
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
@@ -918,7 +926,7 @@ def main():
               % (args.road_smoothness,))
 
     from ams_crypt import encrypt_assets
-    encrypted = encrypt_assets(stage)
+    encrypted = encrypt_assets(stage, mesh_coarsening=args.mesh_coarsening)
     print("  encrypted   %d GMT/DDS assets for AMS1" % encrypted)
 
     if args.install:

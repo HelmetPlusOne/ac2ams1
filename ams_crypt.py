@@ -12,9 +12,9 @@ ASSET_EXTENSIONS = {".dds", ".gmt"}
 MAX_COMMAND_CHARS = 28000
 
 
-def _prepare_gmt_for_ams1(path):
+def _prepare_gmt_for_ams1(path, mesh_coarsening=0.0):
     """Convert rF2 GMT v2.52 exports to AMS1/rF1 GMT v2.20 before encryption."""
-    gmt_rf1.convert_file(path)
+    gmt_rf1.convert_file(path, mesh_coarsening=mesh_coarsening)
 
 
 def _library():
@@ -89,7 +89,7 @@ def _encrypt_with_executable(files, executable):
         _run_encryptor(executable, batch)
 
 
-def encrypt_assets(root):
+def encrypt_assets(root, mesh_coarsening=0.0):
     """Encrypt all loose GMT and DDS assets under a staged location."""
     tools = _library()
     files = []
@@ -105,7 +105,7 @@ def encrypt_assets(root):
         if signature == AMS_SIGNATURE:
             continue
         if os.path.splitext(path)[1].lower() == ".gmt":
-            _prepare_gmt_for_ams1(path)
+            _prepare_gmt_for_ams1(path, mesh_coarsening=mesh_coarsening)
         to_encrypt.append(path)
 
     if to_encrypt:

@@ -133,7 +133,7 @@ def check_blender(rep, blender):
 
 def check(track_dir=None, layout=None, blender=None, install=None,
           need_blender=True, texture_scale=None, texture_scale_min_size=None,
-          road_smoothness=None):
+          road_smoothness=None, mesh_coarsening=None):
     """Print one line per check; True when nothing is missing."""
     import steam_paths
     rep = Report()
@@ -163,10 +163,17 @@ def check(track_dir=None, layout=None, blender=None, install=None,
             smooth_fmt += " (effective road_smooth_sigma=0.0, disabled)"
         else:
             smooth_fmt += " (effective road_smooth_sigma=%sm)" % eff_sigma
+        active_coarsening = (
+            cfg["mesh_coarsening"] if mesh_coarsening is None else mesh_coarsening
+        )
+        coarsen_fmt = _fmt("mesh_coarsening", mesh_coarsening)
+        if active_coarsening == 0.0:
+            coarsen_fmt += " (disabled)"
         parts = [
             _fmt("texture_scale", texture_scale),
             _fmt("texture_scale_min_size", texture_scale_min_size),
             smooth_fmt,
+            coarsen_fmt,
         ]
         summary = ", ".join(parts)
         if cfg["exists"]:

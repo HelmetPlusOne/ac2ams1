@@ -52,6 +52,28 @@ MESH_FLAG_TANGENTS = 0x00000004
 MAT_FLAG_RF2_CARBODY = 0x00002000
 TEX_FLAG_COLOR_KEY = 0x00000080
 
+DEFAULT_NORMAL_QUANT = 500.0
+MAX_COARSEN_NORMAL_DEG = 8.0
+
+
+def normal_dedup_quant(mesh_coarsening=0.0):
+    """Map mesh_coarsening in [0.0, 1.0] to the vertex normal dedup scale K.
+
+    At 0.0 (disabled), returns DEFAULT_NORMAL_QUANT (500.0 ~= 0.11 deg) for
+    exact legacy deduplication. For mesh_coarsening > 0.0, loosens smoothly up
+    to MAX_COARSEN_NORMAL_DEG (8.0 deg, K ~= 7.16) at 1.0 so smooth surfaces
+    deduplicate cleanly while sharp creases (> ~8 deg) stay split.
+    """
+    c = float(mesh_coarsening)
+    if not math.isfinite(c) or not (0.0 <= c <= 1.0):
+        raise ValueError(
+            "mesh_coarsening must be between 0.0 and 1.0, got %r"
+            % (mesh_coarsening,)
+        )
+    if c == 0.0:
+        return DEFAULT_NORMAL_QUANT
+    return min(DEFAULT_NORMAL_QUANT, 1.0 / math.radians(MAX_COARSEN_NORMAL_DEG * c))
+
 
 def is_rf1_gmt(data):
     """Return True when raw GMT bytes already carry the GMOTOR_GMT_2.20 magic."""
@@ -213,19 +235,22 @@ def _split_vertices(data, vert_offset_bytes, vert_count, uv_perm, need_tangents)
     return bytes(verts), bytes(uvs), (bytes(tangents) if need_tangents else None)
 
 
-def _dedup_mesh_vertices(verts_bytes, uvs_bytes, tans_bytes, vert_count):
+def _dedup_mesh_vertices(verts_bytes, uvs_bytes, tans_bytes, vert_count,
+                         normal_quant=DEFAULT_NORMAL_QUANT):
     """Deduplicate mesh vertices in first-appearance order.
 
     Blender's io_rf2_gmt_release exports 3 unshared vertices per triangle and
     introduces ~1e-5 per-loop rounding noise in split normals and tangents.
     Vertices are merged when they share exact position, vertex colour, all 4 UV
-    channels, quantized normal (1/500 ~= 0.11 deg), and tangent-space
-    handedness (preserving hard edges, UV seams, and mirrored normal maps).
+    channels, quantized normal (default 1/500 ~= 0.11 deg, looser when
+    mesh_coarsening > 0), and tangent-space handedness (preserving hard edges,
+    UV seams, and mirrored normal maps).
 
     Returns (verts_bytes, uvs_bytes, tans_bytes, new_vcount, remap) where
     remap[old_idx] == new_idx.
     """
     has_tan = tans_bytes is not None
+    q_scale = float(normal_quant)
     if vert_count <= 1:
         remap = (_np.arange(vert_count, dtype=_np.uint16)
                  if _np is not None else list(range(vert_count)))
@@ -242,7 +267,7 @@ def _dedup_mesh_vertices(verts_bytes, uvs_bytes, tans_bytes, vert_count):
         uvs = _np.where(_np.isfinite(uf), uf, 0.0).astype("<f4") + _np.float32(0.0)
         nf64 = _np.where(_np.isfinite(vf[:, 3:6]), vf[:, 3:6], 0.0).astype(_np.float64)
         nf64 = _np.clip(nf64, -1.0, 1.0)
-        nrm = _np.rint(nf64 * 500.0).astype("<i2")
+        nrm = _np.rint(nf64 * q_scale).astype("<i2")
 
         if has_tan:
             ta_u8 = _np.frombuffer(tans_bytes, dtype=_np.uint8).reshape(vert_count, RF1_TANGENT_SIZE)
@@ -292,7 +317,7 @@ def _dedup_mesh_vertices(verts_bytes, uvs_bytes, tans_bytes, vert_count):
             v = 1.0
         elif v < -1.0:
             v = -1.0
-        return int(round(v * 500.0))
+        return int(round(v * q_scale))
 
     seen = {}
     keep = []
@@ -551,13 +576,14 @@ def _bbox_corners(bbox_min, bbox_max):
     )
 
 
-def convert_rf2_to_rf1(data, label="GMT"):
+def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
     """Convert raw rF2 GMT v2.52 bytes to AMS1/rF1 GMT v2.20 bytes.
 
     Already-converted rF1 GMT v2.20 inputs are returned unchanged.
     """
     if is_rf1_gmt(data):
         return data
+    n_quant = normal_dedup_quant(mesh_coarsening)
     if not is_rf2_gmt(data):
         raise RuntimeError(
             "unsupported GMT version or corrupted header in %s" % label)
@@ -689,7 +715,7 @@ def convert_rf2_to_rf1(data, label="GMT"):
         verts_bytes, uvs_bytes, tans_bytes = _split_vertices(
             data, voff + m_vstart * RF2_VERTEX_SIZE, m_vcount, uv_perm, has_bump)
         verts_bytes, uvs_bytes, tans_bytes, new_vcount, remap = _dedup_mesh_vertices(
-            verts_bytes, uvs_bytes, tans_bytes, m_vcount)
+            verts_bytes, uvs_bytes, tans_bytes, m_vcount, normal_quant=n_quant)
         tris_bytes = _remap_triangles(
             data, toff + m_tstart * 2, m_tcount, remap, m_vcount)
 
@@ -903,11 +929,12 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
     return bytes(out)
 
 
-def convert_file(path):
+def convert_file(path, mesh_coarsening=0.0):
     """Convert a GMT file on disk from rF2 v2.52 to AMS1/rF1 v2.20 in place."""
     with open(path, "rb") as f:
         original = f.read()
-    converted = convert_rf2_to_rf1(original, label=path)
+    converted = convert_rf2_to_rf1(
+        original, label=path, mesh_coarsening=mesh_coarsening)
     if converted is not original:
         with open(path, "wb") as f:
             f.write(converted)

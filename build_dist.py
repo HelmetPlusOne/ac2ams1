@@ -7,7 +7,7 @@ Recreates ``dist/`` from scratch with:
   - ``README.md`` (usage instructions and list of bundled tools)
   - ``tools/blender/`` (portable Blender 3.6 LTS with ``io_rf2_gmt_release``
     pre-installed inside ``3.6/scripts/addons/``)
-  - ``tools/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``)
+  - ``tools/blender_scripts/`` (``blender_stage.py``, ``kn5.py``, ``backdrop.py``, ``mesh_coarsen.py``)
   - ``tools/texconv/texconv.exe``
   - ``tools/rfactortools/`` (``rfactorcrypt.exe`` and its runtime files)
   - ``data/ac/system/data/surfaces.ini``
@@ -31,7 +31,7 @@ import steam_paths
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADDON_NAME = "io_rf2_gmt_release"
 SKY_ASSETS = ("SRPL_SKY3_DOME1.GMT", "SRPL_SKY3_SUN1.GMT")
-BLENDER_SCRIPTS = ("blender_stage.py", "kn5.py", "backdrop.py")
+BLENDER_SCRIPTS = ("blender_stage.py", "kn5.py", "backdrop.py", "mesh_coarsen.py")
 HIDDEN_IMPORTS = (
     "ams_crypt",
     "backdrop",
@@ -46,6 +46,7 @@ HIDDEN_IMPORTS = (
     "kn5",
     "make_aiw",
     "make_cam",
+    "mesh_coarsen",
     "numpy",
     "parallel",
     "road_smooth",
