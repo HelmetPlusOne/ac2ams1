@@ -13,6 +13,7 @@ Converted tracks are automatically installed into the `out\` folder next to
 ### TBD
 
 - **Malformed DDS byte-size re-encoding and collision-shell handling (e.g. Road Atlanta `jr_road_atlanta_2022`)**: Updated `fix_textures.py` (and `verify_install.py`) to validate block-compressed DDS file sizes against their header dimensions and mip counts and re-encode mismatched files via `texconv` (fixing AMS1 `Error loading texture ... for material wall_NULL` caused by Road Atlanta's 224-byte vs. expected 176-byte 4x4 DXT5 texture); also marked non-rendered collision-only meshes `Render=False Change=False` in `.scn` and sanitized reserved `NULL`/`NONE` texture and material names.
+- **Texture downscale destination floor (`texture_scale_min_size`)**: In addition to skipping textures smaller than `texture_scale_min_size`, scaled textures are now clamped so their larger dimension is not reduced below the first power-of-two size smaller than `texture_scale_min_size` (e.g. with default `1024` and `texture_scale=0.25`, `1024x1024` scales to `512x512` instead of `256x256`; no change for `texture_scale=0.5`).
 
 ### 22 Nov 2026
 
@@ -64,7 +65,7 @@ Common options:
 - `--layout <name>` — layout name for multi-layout tracks (the part after `models_` in `models_<name>.ini`).
 - `--hour HH:MM` — session start time (default `12:00`).
 - `--texture-scale <0..1>` — texture resolution scale per dimension (overrides `ac2ams1.ini`; default `0.5`).
-- `--texture-scale-min-size <px>` — minimum `max(width, height)` (inclusive) to scale textures (overrides `ac2ams1.ini`; default `1024`, so `1024x1024`+ are scaled while `512x512` and smaller are kept unscaled).
+- `--texture-scale-min-size <px>` — minimum `max(width, height)` (inclusive) to scale textures (overrides `ac2ams1.ini`; default `1024`, so `1024x1024`+ are scaled while `512x512` and smaller are kept unscaled). Also acts as a destination floor for scaled textures: `max(width, height)` is not reduced below the first power-of-two size smaller than this threshold (e.g. with `1024` and `--texture-scale 0.25`, `1024x1024` becomes `512x512` instead of `256x256`).
 - `--road-smoothness <0..1>` — C2 triweight quadratic MLS Y-smoothing strength for physical road meshes (overrides `ac2ams1.ini`; default `0.5`). Mapped uniformly to effective `road_smooth_sigma` in `[0m, 8m]` (`0.0` disables smoothing, `0.5 -> 4m` default, `1.0 -> 8m` max).
 - `--jobs <n>` — number of parallel Blender and texture conversion workers.
 - `--skip-geometry` — reuse previously exported GMT meshes in `work\<track>\gmt\`.

@@ -253,7 +253,7 @@ def main():
     ap.add_argument("--texture-scale", type=float, default=None,
                     help="scale factor per texture dimension (overrides ac2ams1.ini [track] texture_scale; default 0.5)")
     ap.add_argument("--texture-scale-min-size", type=int, default=None,
-                    help="minimum max(w, h) (inclusive) to scale textures (overrides ac2ams1.ini [track] texture_scale_min_size; default 1024)")
+                    help="minimum max(w, h) (inclusive) to scale textures and destination floor bound (overrides ac2ams1.ini [track] texture_scale_min_size; default 1024)")
     ap.add_argument("--road-smoothness", type=float, default=None,
                     help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; overrides ac2ams1.ini [track] road_smoothness)")
     ap.add_argument("--grain", default="2")

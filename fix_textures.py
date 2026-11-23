@@ -56,14 +56,38 @@ def target_size(n, scale=DEFAULT_SCALE, cap=MAX_TEX_DIM):
     return pow2_size(scaled, cap=max_dim)
 
 
+def min_scaled_size(min_size, cap=MAX_TEX_DIM):
+    """Largest DX9 power-of-two size strictly smaller than min_size, or 0."""
+    m = int(min_size)
+    if m <= 4:
+        return 0
+    return min(cap, 1 << ((m - 1).bit_length() - 1))
+
+
 def target_dimensions(w, h, scale=DEFAULT_SCALE, min_size=DEFAULT_SCALE_MIN_SIZE,
                       cap=MAX_TEX_DIM):
-    """Compute DX9 target (w, h), scaling only when max(w, h) >= min_size."""
-    effective_scale = float(scale) if max(int(w), int(h)) >= int(min_size) else 1.0
-    return (
-        target_size(w, effective_scale, cap=cap),
-        target_size(h, effective_scale, cap=cap),
-    )
+    """Compute DX9 target (w, h), scaling only when max(w, h) >= min_size.
+
+    When scaling down, the larger target dimension is kept at or above the
+    largest DX9 power-of-two size strictly smaller than min_size (e.g. 512
+    when min_size=1024), preserving aspect ratio.
+    """
+    w, h = int(w), int(h)
+    max_src = max(w, h)
+    if max_src < int(min_size):
+        return (
+            target_size(w, 1.0, cap=cap),
+            target_size(h, 1.0, cap=cap),
+        )
+    effective_scale = float(scale)
+    tw = target_size(w, effective_scale, cap=cap)
+    th = target_size(h, effective_scale, cap=cap)
+    floor = min_scaled_size(min_size, cap=cap)
+    if floor and max(tw, th) < floor:
+        effective_scale = min(1.0, max(effective_scale, floor / float(min(max_src, cap))))
+        tw = target_size(w, effective_scale, cap=cap)
+        th = target_size(h, effective_scale, cap=cap)
+    return (tw, th)
 
 
 def full_levels(w, h):

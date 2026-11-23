@@ -614,6 +614,25 @@ class AmsFinalizeTests(unittest.TestCase):
         # min_size=0 scales everything.
         self.assertEqual(fix_textures.target_dimensions(512, 512, 0.5, 0), (256, 256))
 
+        # Destination floor: when texture_scale < 0.5 (e.g. 0.25 or 0.125),
+        # scaled textures are not reduced below the largest pow2 < min_size
+        # (512 for min_size=1024), while preserving aspect ratio.
+        self.assertEqual(fix_textures.target_dimensions(4096, 4096, 0.25, 1024), (1024, 1024))
+        self.assertEqual(fix_textures.target_dimensions(4096, 2048, 0.25, 1024), (1024, 512))
+        self.assertEqual(fix_textures.target_dimensions(2048, 2048, 0.25, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(2048, 512, 0.25, 1024), (512, 128))
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, 0.25, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(1024, 512, 0.25, 1024), (512, 256))
+        self.assertEqual(fix_textures.target_dimensions(1024, 256, 0.25, 1024), (512, 128))
+        self.assertEqual(fix_textures.target_dimensions(1024, 4, 0.25, 1024), (512, 4))
+        self.assertEqual(fix_textures.target_dimensions(512, 512, 0.25, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(2048, 2048, 0.125, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, 0.125, 1024), (512, 512))
+        self.assertEqual(fix_textures.target_dimensions(512, 512, 0.25, 512), (256, 256))
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, 0.25, 512), (256, 256))
+        self.assertEqual(fix_textures.target_dimensions(1024, 1024, 0.25, 0), (256, 256))
+        self.assertEqual(fix_textures.target_dimensions(512, 512, 0.25, 0), (128, 128))
+
 
 class ConvertMultipleTracksTests(unittest.TestCase):
     def test_runs_all_lines_with_install_auto_and_skips_errors(self):
