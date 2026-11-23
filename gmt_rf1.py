@@ -12,6 +12,7 @@ TexturesUV / optional 24-byte UVTangents arrays per mesh, and 3-level
 AMS1's coreshaders.mas.
 """
 import math
+import os
 import struct
 
 try:

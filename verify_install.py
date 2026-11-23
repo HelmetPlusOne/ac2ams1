@@ -15,6 +15,7 @@ import struct
 import argparse
 
 from ams_crypt import AMS_KEY, AMS_SIGNATURE, crypt_info
+from fix_textures import expected_dds_bytes
 
 # Measured by exporting one mesh twice with different thresholds and diffing:
 # exactly one byte moved. From the START of the texture name, not the end --
@@ -258,13 +259,19 @@ def main():
             unloadable.append(t + " (not DDS)")
         else:
             h, w = struct.unpack_from("<II", head, 12)
+            mips = struct.unpack_from("<I", head, 28)[0]
             fourcc = head[84:88]
+            exp_bytes = expected_dds_bytes(w, h, fourcc, mips)
+            actual_bytes = os.path.getsize(source)
             if min(w, h) < 4:
                 unloadable.append(t + " (under 4x4)")
             elif (w & (w - 1)) != 0 or (h & (h - 1)) != 0:
                 unloadable.append("%s (non-pow2 %dx%d)" % (t, w, h))
             elif fourcc not in (b"DXT1", b"DXT3", b"DXT5"):
                 unloadable.append("%s (format %r)" % (t, fourcc))
+            elif exp_bytes is not None and actual_bytes != exp_bytes:
+                unloadable.append("%s (malformed DDS size %d != %d)"
+                                  % (t, actual_bytes, exp_bytes))
     if unloadable:
         problems.append("textures AMS1 cannot load: %s" % unloadable[:5])
 

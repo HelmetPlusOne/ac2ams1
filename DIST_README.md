@@ -10,6 +10,10 @@ Converted tracks are automatically installed into the `out\` folder next to
 
 ## Changelog
 
+### TBD
+
+- **Malformed DDS byte-size re-encoding and collision-shell handling (e.g. Road Atlanta `jr_road_atlanta_2022`)**: Updated `fix_textures.py` (and `verify_install.py`) to validate block-compressed DDS file sizes against their header dimensions and mip counts and re-encode mismatched files via `texconv` (fixing AMS1 `Error loading texture ... for material wall_NULL` caused by Road Atlanta's 224-byte vs. expected 176-byte 4x4 DXT5 texture); also marked non-rendered collision-only meshes `Render=False Change=False` in `.scn` and sanitized reserved `NULL`/`NONE` texture and material names.
+
 ### 22 Nov 2026
 
 - **MultiMap alpha and colour-tint fix (e.g. Union Island wooden houses)**: Fixed `ksPerPixelMultiMap*` / `ksPerPixelMultiMap_AT_NMDetail` materials reading their alpha-test channel from `txDiffuse.a` (the AC detail-blend mask) instead of `txNormal.a`, which made painted house walls completely transparent; and baked flat-colour `txDetail` tints directly using AC's `lerp(txDiffuse, txDiffuse * txDetail, 1 - txDiffuse.a)` formula (including plain `ksPerPixelMultiMap` with `useDetail=1`) so tinted walls, roofs, and props keep their bright colours instead of turning grey.

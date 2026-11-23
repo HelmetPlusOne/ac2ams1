@@ -71,6 +71,19 @@ def full_levels(w, h):
     return max(w, h).bit_length()
 
 
+def expected_dds_bytes(w, h, fourcc, mips):
+    """Expected total byte size of a standard 2D block-compressed DDS file."""
+    if fourcc not in BLOCK or w <= 0 or h <= 0:
+        return None
+    bpb = 8 if fourcc == b"DXT1" else 16
+    total = 128
+    mw, mh = w, h
+    for _ in range(max(1, mips)):
+        total += max(1, (mw + 3) // 4) * max(1, (mh + 3) // 4) * bpb
+        mw, mh = max(1, mw // 2), max(1, mh // 2)
+    return total
+
+
 # AC loads whatever image is inside a .dds name; mod tracks ripped from other
 # games often ship PNGs or JPEGs that way. rF2 reads only real DDS and draws
 # the rest flat blue (ek_nagao: every texture is a PNG).
@@ -139,6 +152,8 @@ def main():
         w, h, fourcc, bpp, mips = info
         tw, th = target_dimensions(w, h, args.scale, args.scale_min_size)
         need_resize = (w != tw or h != th)
+        exp_bytes = expected_dds_bytes(w, h, fourcc, mips)
+        actual_bytes = os.path.getsize(os.path.join(tex_dir, f))
         if min(w, h) < 4:
             todo.append((f, w, h, tw, th, bpp, args.format, "under 4x4"))
         elif fourcc not in BLOCK:
@@ -147,6 +162,9 @@ def main():
             reason = ("non-pow2 -> %dx%d" if (not is_pow2(w) or not is_pow2(h))
                       else "scale -> %dx%d") % (tw, th)
             todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc], reason))
+        elif exp_bytes is not None and actual_bytes != exp_bytes:
+            todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc],
+                         "bad size %d!=%d" % (actual_bytes, exp_bytes)))
         elif (not args.keep_mips and fourcc in SAME_FORMAT
               and max(w, h) >= MIP_MIN and mips < full_levels(w, h)):
             todo.append((f, w, h, tw, th, bpp, SAME_FORMAT[fourcc],

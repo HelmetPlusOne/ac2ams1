@@ -1048,6 +1048,114 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(n.uvs[0], (0.25, 0.75))
             self.assertEqual(n.indices, (0, 1, 2))
 
+    def test_reserved_null_texture_and_render_false_timing_and_collision(self):
+        import json
+        import convert_track
+
+        mapped = convert_track.texture_filenames(["NULL.dds", "NONE.dds", "ok.dds"])
+        self.assertEqual(mapped["NULL.dds"], "tex_null.dds")
+        self.assertEqual(mapped["NONE.dds"], "tex_none.dds")
+        self.assertEqual(mapped["ok.dds"], "ok.dds")
+
+        mats = convert_track.Materials()
+        self.assertEqual(mats.rf2_name("NULL", "NULL"), "mat_null")
+        self.assertEqual(mats.rf2_name("NULL", "NULL", "wall"), "wall_NULL")
+
+        # gmt_rf1 rewrites reserved NULL.dds texture record without error.
+        rf2 = _make_rf2_gmt(
+            "1WALL",
+            shader="L2DIFFUSET0",
+            textures=[("NULL.dds", 0x18, 1, 3, 0, 0)],
+        )
+        rf1 = gmt_rf1.convert_rf2_to_rf1(rf2)
+        self.assertIn(b"tex_null.dds\x00", rf1)
+        self.assertNotIn(b"NULL.dds\x00", rf1)
+
+        # finalize_track emits Response=VEHICLE,TIMING for timing strips (which
+        # omit "render") AND Render=False for collision-only shells.
+        with tempfile.TemporaryDirectory() as root:
+            venue = "sample_ra"
+            out_dir = os.path.join(root, venue)
+            gmt_dir = os.path.join(out_dir, "gmt")
+            tex_dir = os.path.join(out_dir, "textures")
+            os.makedirs(gmt_dir)
+            os.makedirs(tex_dir)
+            rows = [
+                {"gmt": "xfinish.gmt", "mesh": "xfinish", "physical": True,
+                 "timing": True, "tris": 2},
+                {"gmt": "xsector1.gmt", "mesh": "xsector1", "physical": True,
+                 "timing": True, "tris": 2},
+                {"gmt": "xsector2.gmt", "mesh": "xsector2", "physical": True,
+                 "timing": True, "tris": 2},
+                {"gmt": "1WALL_001.gmt", "mesh": "1WALL_001", "physical": True,
+                 "render": False, "tris": 4},
+                {"gmt": "vis.gmt", "mesh": "vis", "physical": False,
+                 "render": True, "tris": 2},
+            ]
+            for r in rows:
+                with open(os.path.join(gmt_dir, r["gmt"]), "wb") as f:
+                    f.write(b"mesh")
+            with open(os.path.join(gmt_dir, "exported.json"), "w") as f:
+                json.dump(rows, f)
+            with open(os.path.join(out_dir, venue + ".tdf"), "w") as f:
+                f.write("[TRACKVARS]\n")
+
+            with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir]), \
+                    mock.patch("ams_crypt.encrypt_assets", return_value=3):
+                finalize_track.main()
+
+            scn_path = os.path.join(out_dir, "ams1", venue, venue, venue + ".scn")
+            with open(scn_path, encoding="utf-8") as f:
+                scene = f.read()
+            self.assertIn("Instance=xfinish\n{\n  Render=False Change=False VisGroups=(32)\n"
+                          "  MeshFile=xfinish.gmt CollTarget=True HATTarget=False\n"
+                          "  Response=VEHICLE,TIMING\n}", scene)
+            self.assertIn("Instance=1WALL_001\n{\n  Render=False Change=False\n"
+                          "  MeshFile=1WALL_001.gmt CollTarget=True HATTarget=True\n}", scene)
+            self.assertIn("Instance=vis\n{\n  MeshFile=vis.gmt CollTarget=False HATTarget=False ShadowReceiver=True\n}", scene)
+
+    def test_fix_textures_reencodes_malformed_dds_byte_size(self):
+        # 4x4 DXT5 with 3 mips should be 128 + 16*3 = 176 bytes; Road Atlanta's
+        # embedded NULL.dds has 96 bytes of body (224 bytes total), causing AMS1
+        # to fail loading it.
+        self.assertEqual(fix_textures.expected_dds_bytes(4, 4, b"DXT5", 3), 176)
+        self.assertEqual(fix_textures.expected_dds_bytes(4, 4, b"DXT1", 1), 136)
+        self.assertEqual(fix_textures.expected_dds_bytes(4, 4, b"DXT1", 0), 136)
+
+        hdr = bytearray(128)
+        hdr[0:4] = b"DDS "
+        struct.pack_into("<I", hdr, 4, 124)
+        struct.pack_into("<I", hdr, 8, 0xA1007)
+        struct.pack_into("<II", hdr, 12, 4, 4)
+        struct.pack_into("<I", hdr, 20, 16)
+        struct.pack_into("<I", hdr, 28, 3)
+        struct.pack_into("<II", hdr, 76, 32, 0x4)
+        hdr[84:88] = b"DXT5"
+        struct.pack_into("<I", hdr, 108, 0x401008)
+
+        seen_cmds = []
+
+        def fake_run(cmd, **_kwargs):
+            seen_cmds.append(cmd)
+            out_dir = cmd[cmd.index("-o") + 1]
+            with open(os.path.join(out_dir, "tex_null.dds"), "wb") as f:
+                f.write(bytes(hdr) + bytes(48))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as root:
+            tex_dir = os.path.join(root, "textures")
+            os.makedirs(tex_dir)
+            bad = os.path.join(tex_dir, "tex_null.dds")
+            with open(bad, "wb") as f:
+                f.write(bytes(hdr) + bytes(96))  # 224 bytes instead of 176
+
+            with mock.patch.object(sys, "argv", ["fix_textures.py", tex_dir, "--jobs", "1"]), \
+                    mock.patch.object(fix_textures.subprocess, "run", side_effect=fake_run):
+                fix_textures.main()
+
+            self.assertEqual(len(seen_cmds), 1)
+            self.assertEqual(os.path.getsize(bad), 176)
+
 
 if __name__ == "__main__":
     unittest.main()
