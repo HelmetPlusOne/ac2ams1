@@ -761,8 +761,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smooth_sigma"], 4.0)
             self.assertEqual(cfg["mesh_coarsening"], 0.0)
             self.assertEqual(cfg["mesh_coarsening_source"], "default")
-            self.assertTrue(cfg["strip_non_collidable_faces"])
-            self.assertEqual(cfg["strip_non_collidable_faces_source"], "default")
+            self.assertTrue(cfg["strip_unused_gmt_data"])
+            self.assertEqual(cfg["strip_unused_gmt_data_source"], "default")
             self.assertNotIn("road_smooth", cfg)
 
             # Partial ini marks only specified keys as read from ini.
@@ -773,7 +773,7 @@ class StandaloneCliTests(unittest.TestCase):
                     "texture_scale=0.25 # quarter\n"
                     "road_smoothness=0\n"
                     "mesh_coarsening=0.6\n"
-                    "strip_non_collidable_faces=false\n"
+                    "strip_unused_gmt_data=false\n"
                 )
             cfg = steam_paths.load_config(root)
             self.assertTrue(cfg["exists"])
@@ -786,8 +786,15 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smooth_sigma"], 0.0)
             self.assertEqual(cfg["mesh_coarsening"], 0.6)
             self.assertEqual(cfg["mesh_coarsening_source"], "ini")
-            self.assertFalse(cfg["strip_non_collidable_faces"])
-            self.assertEqual(cfg["strip_non_collidable_faces_source"], "ini")
+            self.assertFalse(cfg["strip_unused_gmt_data"])
+            self.assertEqual(cfg["strip_unused_gmt_data_source"], "ini")
+
+            # Legacy alias strip_non_collidable_faces still works if present.
+            with open(ini, "w", encoding="utf-8") as f:
+                f.write("[track]\nstrip_non_collidable_faces=false\n")
+            cfg = steam_paths.load_config(root)
+            self.assertFalse(cfg["strip_unused_gmt_data"])
+            self.assertEqual(cfg["strip_unused_gmt_data_source"], "ini")
 
             # Uniform road_smoothness [0.0, 1.0] -> road_smooth_sigma [0.0, 8.0]
             # with arbitrary floating-point precision.
@@ -840,10 +847,10 @@ class StandaloneCliTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     steam_paths.load_config(root)
 
-            # Invalid boolean for strip_non_collidable_faces raises ValueError.
+            # Invalid boolean for strip_unused_gmt_data raises ValueError.
             for bad in ("maybe", "2", ""):
                 with open(ini, "w", encoding="utf-8") as f:
-                    f.write("[track]\nstrip_non_collidable_faces=%s\n" % bad)
+                    f.write("[track]\nstrip_unused_gmt_data=%s\n" % bad)
                 with self.assertRaises(ValueError):
                     steam_paths.load_config(root)
 
@@ -1499,19 +1506,83 @@ class StandaloneCliTests(unittest.TestCase):
             recorded = []
 
             def fake_encrypt_assets(stage, **kwargs):
-                recorded.append(kwargs.get("collidable_gmts"))
+                recorded.append((
+                    kwargs.get("collidable_gmts"),
+                    kwargs.get("drop_flat_tangents"),
+                ))
                 return 4
 
             with mock.patch("ams_crypt.encrypt_assets", side_effect=fake_encrypt_assets):
-                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--strip-non-collidable-faces"]):
+                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--strip-unused-gmt-data"]):
                     finalize_track.main()
-                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--no-strip-non-collidable-faces"]):
+                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--no-strip-unused-gmt-data"]):
                     finalize_track.main()
 
-            self.assertIsNotNone(recorded[0])
-            self.assertNotIn("tree.gmt", recorded[0])
-            self.assertIn("xfinish.gmt", recorded[0])
-            self.assertIsNone(recorded[1])
+            self.assertIsNotNone(recorded[0][0])
+            self.assertNotIn("tree.gmt", recorded[0][0])
+            self.assertIn("xfinish.gmt", recorded[0][0])
+            self.assertTrue(recorded[0][1])
+            self.assertIsNone(recorded[1][0])
+            self.assertFalse(recorded[1][1])
+
+    def test_drop_flat_tangents_downgrades_dummy_bump_cutouts_to_diffuse(self):
+        # Alpha-tested tree cutout with neutral _flat_spec.dds + _flat_nm.dds.
+        flat_cutout = _make_rf2_gmt(
+            "tree_card",
+            shader="L2BUMPSPECMAPT0",
+            textures=[
+                ("tree_a128.dds", 0x88, 1, 3, 0, 191),
+                ("_flat_spec.dds", 0x08, 2, 4, 1, 0),
+                ("_flat_nm.dds", 0x08, 5, 4, 2, 0),
+            ],
+        )
+        kept = gmt_rf1.convert_rf2_to_rf1(flat_cutout, drop_flat_tangents=False)
+        dropped = gmt_rf1.convert_rf2_to_rf1(flat_cutout, drop_flat_tangents=True)
+
+        # Kept version uses L2BUMPSPECMAPT0 with UVTangents; dropped uses L2DIFFUSET0 without tangents.
+        m_kept = struct.unpack_from("<10I", kept, gmt_rf1.RF1_HEADER_SIZE)
+        m_drop = struct.unpack_from("<10I", dropped, gmt_rf1.RF1_HEADER_SIZE)
+        self.assertTrue(m_kept[0] & gmt_rf1.MESH_FLAG_TANGENTS)
+        self.assertGreater(m_kept[5], 0)  # rf1_tan_rel > 0
+        self.assertFalse(m_drop[0] & gmt_rf1.MESH_FLAG_TANGENTS)
+        self.assertEqual(m_drop[5], 0)    # rf1_tan_rel == 0
+        self.assertIn(b"L2DIFFUSET0\x00", dropped)
+        self.assertNotIn(b"L2BUMPSPECMAPT0\x00", dropped)
+        self.assertNotIn(b"_flat_nm.dds", dropped)
+        self.assertNotIn(b"_flat_spec.dds", dropped)
+        self.assertLess(len(dropped), len(kept))
+
+        # ColorKey (0x80) and Alpha_Reference (191) are preserved on tree_a128.dds!
+        tex_pos = dropped.index(b"tree_a128.dds\x00")
+        tflags = struct.unpack_from("<I", dropped, tex_pos + 64)[0]
+        aref = struct.unpack_from("<I", dropped, tex_pos + 100)[0]
+        self.assertTrue(tflags & gmt_rf1.TEX_FLAG_COLOR_KEY)
+        self.assertEqual(aref, 191)
+
+        # Pure-Python fallback parity.
+        with mock.patch.object(gmt_rf1, "_np", None):
+            dropped_py = gmt_rf1.convert_rf2_to_rf1(flat_cutout, drop_flat_tangents=True)
+        self.assertEqual(dropped, dropped_py)
+
+        # Real normal map or real specular map MUST keep L2BUMPSPECMAPT0 + UVTangents!
+        for spec_name, nm_name in (
+            ("_flat_spec.dds", "bark_nm.dds"),
+            ("metal_spec.dds", "_flat_nm.dds"),
+        ):
+            real_bump = _make_rf2_gmt(
+                "real_bump",
+                shader="L2BUMPSPECMAPT0",
+                textures=[
+                    ("base.dds", 0x18, 1, 3, 0, 0),
+                    (spec_name, 0x08, 2, 4, 1, 0),
+                    (nm_name, 0x08, 5, 4, 2, 0),
+                ],
+            )
+            out = gmt_rf1.convert_rf2_to_rf1(real_bump, drop_flat_tangents=True)
+            m = struct.unpack_from("<10I", out, gmt_rf1.RF1_HEADER_SIZE)
+            self.assertTrue(m[0] & gmt_rf1.MESH_FLAG_TANGENTS)
+            self.assertGreater(m[5], 0)
+            self.assertIn(b"L2BUMPSPECMAPT0\x00", out)
 
 
 if __name__ == "__main__":

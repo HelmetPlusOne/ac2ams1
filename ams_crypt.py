@@ -12,10 +12,12 @@ ASSET_EXTENSIONS = {".dds", ".gmt"}
 MAX_COMMAND_CHARS = 28000
 
 
-def _prepare_gmt_for_ams1(path, mesh_coarsening=0.0, include_faces=True):
+def _prepare_gmt_for_ams1(path, mesh_coarsening=0.0, include_faces=True,
+                          drop_flat_tangents=False):
     """Convert rF2 GMT v2.52 exports to AMS1/rF1 GMT v2.20 before encryption."""
     gmt_rf1.convert_file(
-        path, mesh_coarsening=mesh_coarsening, include_faces=include_faces)
+        path, mesh_coarsening=mesh_coarsening, include_faces=include_faces,
+        drop_flat_tangents=drop_flat_tangents)
 
 
 def _library():
@@ -90,12 +92,15 @@ def _encrypt_with_executable(files, executable):
         _run_encryptor(executable, batch)
 
 
-def encrypt_assets(root, mesh_coarsening=0.0, collidable_gmts=None):
+def encrypt_assets(root, mesh_coarsening=0.0, collidable_gmts=None,
+                   drop_flat_tangents=False):
     """Encrypt all loose GMT and DDS assets under a staged location.
 
     When ``collidable_gmts`` is provided (a collection of lowercased GMT
     basenames), only those GMTs keep FaceData/NormalData collision tables;
     non-collidable visual GMTs are converted with ``include_faces=False``.
+    When ``drop_flat_tangents`` is True, flat-normal/flat-spec bump cutouts
+    are downgraded to ``L2DIFFUSET0`` without UVTangents.
     """
     tools = _library()
     collidable = (
@@ -121,7 +126,8 @@ def encrypt_assets(root, mesh_coarsening=0.0, collidable_gmts=None):
             )
             _prepare_gmt_for_ams1(
                 path, mesh_coarsening=mesh_coarsening,
-                include_faces=include_faces)
+                include_faces=include_faces,
+                drop_flat_tangents=drop_flat_tangents)
         to_encrypt.append(path)
 
     if to_encrypt:

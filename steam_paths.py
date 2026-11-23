@@ -34,7 +34,7 @@ DEFAULT_TEXTURE_SCALE = 0.5
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
 DEFAULT_ROAD_SMOOTHNESS = 0.5
 DEFAULT_MESH_COARSENING = 0.0
-DEFAULT_STRIP_NON_COLLIDABLE_FACES = True
+DEFAULT_STRIP_UNUSED_GMT_DATA = True
 
 
 def parse_bool_option(raw, name):
@@ -201,8 +201,8 @@ def load_config(base_dir=None):
         "road_smooth_sigma": road_smoothness_to_sigma(DEFAULT_ROAD_SMOOTHNESS),
         "mesh_coarsening": DEFAULT_MESH_COARSENING,
         "mesh_coarsening_source": "default",
-        "strip_non_collidable_faces": DEFAULT_STRIP_NON_COLLIDABLE_FACES,
-        "strip_non_collidable_faces_source": "default",
+        "strip_unused_gmt_data": DEFAULT_STRIP_UNUSED_GMT_DATA,
+        "strip_unused_gmt_data_source": "default",
     }
     if not os.path.isfile(ini_path):
         return result
@@ -274,12 +274,18 @@ def load_config(base_dir=None):
             )
         result["mesh_coarsening"] = coarsening
         result["mesh_coarsening_source"] = "ini"
-    if parser.has_option("track", "strip_non_collidable_faces"):
+    if parser.has_option("track", "strip_unused_gmt_data"):
+        raw = parser.get("track", "strip_unused_gmt_data").strip()
+        result["strip_unused_gmt_data"] = parse_bool_option(
+            raw, "[track] strip_unused_gmt_data"
+        )
+        result["strip_unused_gmt_data_source"] = "ini"
+    elif parser.has_option("track", "strip_non_collidable_faces"):
         raw = parser.get("track", "strip_non_collidable_faces").strip()
-        result["strip_non_collidable_faces"] = parse_bool_option(
+        result["strip_unused_gmt_data"] = parse_bool_option(
             raw, "[track] strip_non_collidable_faces"
         )
-        result["strip_non_collidable_faces_source"] = "ini"
+        result["strip_unused_gmt_data_source"] = "ini"
     return result
 
 

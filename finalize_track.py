@@ -719,9 +719,9 @@ def main():
                     help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; default from ac2ams1.ini / 0.5)")
     ap.add_argument("--mesh-coarsening", type=float, default=None,
                     help="mesh coarsening strength in [0.0, 1.0] (controls rF1 vertex normal dedup tolerance; default from ac2ams1.ini / 0.0)")
-    ap.add_argument("--strip-non-collidable-faces",
+    ap.add_argument("--strip-unused-gmt-data",
                     action=argparse.BooleanOptionalAction, default=None,
-                    help="strip collision FaceData/NormalData from CollTarget=False visual-only GMTs (default from ac2ams1.ini / true)")
+                    help="strip unused collision FaceData/NormalData on CollTarget=False GMTs and dummy UVTangents on flat-normal cutouts (default from ac2ams1.ini / true)")
     args = ap.parse_args()
 
     import steam_paths
@@ -741,8 +741,8 @@ def main():
         args.mesh_coarsening = steam_paths.validate_mesh_coarsening(args.mesh_coarsening)
     except ValueError as exc:
         raise SystemExit("--mesh-coarsening: %s" % exc)
-    if args.strip_non_collidable_faces is None:
-        args.strip_non_collidable_faces = _cfg["strip_non_collidable_faces"]
+    if args.strip_unused_gmt_data is None:
+        args.strip_unused_gmt_data = _cfg["strip_unused_gmt_data"]
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
@@ -930,7 +930,7 @@ def main():
         print("  road smooth disabled (road_smoothness=%s, effective road_smooth_sigma=0.0m)"
               % (args.road_smoothness,))
 
-    if args.strip_non_collidable_faces:
+    if args.strip_unused_gmt_data:
         collidable_gmts = {
             row["gmt"].lower()
             for row in exported
@@ -944,12 +944,13 @@ def main():
         stage,
         mesh_coarsening=args.mesh_coarsening,
         collidable_gmts=collidable_gmts,
+        drop_flat_tangents=bool(args.strip_unused_gmt_data),
     )
     if collidable_gmts is not None:
-        print("  encrypted   %d GMT/DDS assets for AMS1 (stripped faces on %d visual-only GMTs)"
+        print("  encrypted   %d GMT/DDS assets for AMS1 (stripped unused faces on %d visual GMTs + flat-normal tangents)"
               % (encrypted, max(0, n_gmt - len(collidable_gmts - {"xpitin.gmt", "xpitout.gmt"}))))
     else:
-        print("  encrypted   %d GMT/DDS assets for AMS1 (face stripping disabled)" % encrypted)
+        print("  encrypted   %d GMT/DDS assets for AMS1 (unused GMT data stripping disabled)" % encrypted)
 
     if args.install:
         try:

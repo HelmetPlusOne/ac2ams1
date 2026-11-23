@@ -114,13 +114,23 @@ def _tex_stage(tex_raw, fallback):
     return stage if 0 <= stage < 4 else fallback
 
 
-def _map_material_for_ams1(rf2_shader, textures):
+def _tex_filename_lower(tex_raw):
+    return tex_raw[:64].split(b"\x00", 1)[0].decode("ascii", errors="replace").strip().lower()
+
+
+def _map_material_for_ams1(rf2_shader, textures, drop_flat_tangents=False):
     """Map an rF2 shader and its textures to AMS1's 3-level shader set.
 
     Returns (has_bump, uv_perm, shader_levels) where:
       - has_bump: whether AMS1 needs the 24-byte UVTangents block (mflags |= 4)
       - uv_perm: 4-tuple mapping AMS1 TEXCOORD[k] <- rF2 UV[uv_perm[k]]
       - shader_levels: list of 3 tuples (shader_name, [(tex_raw, stage), ...])
+
+    When ``drop_flat_tangents`` is True, ``L2BUMPSPECMAPT0`` materials whose
+    specular and bump slots are both neutral stand-ins (``_flat_spec.dds`` and
+    ``_flat_nm.dds`` — e.g. alpha-tested foliage/fence cutouts) are downgraded
+    to ``L2DIFFUSET0`` (which AMS1 natively alpha-tests via ColorKey 0x80),
+    dropping the unused 24 B/vertex UVTangents block.
     """
     shader = rf2_shader.strip().upper()
 
@@ -150,6 +160,16 @@ def _map_material_for_ams1(rf2_shader, textures):
 
     if shader == "L2BUMPSPECMAPT0" and len(textures) >= 3:
         base, spec, bump = textures[0], textures[1], textures[2]
+        if (drop_flat_tangents
+                and _tex_filename_lower(spec) == "_flat_spec.dds"
+                and _tex_filename_lower(bump) == "_flat_nm.dds"):
+            uv_perm = (_tex_stage(base, 0), 1, 2, 3)
+            levels = [
+                ("L0DIFFUSET0", [(base, 0)]),
+                ("L1DIFFUSET0", [(base, 0)]),
+                ("L2DIFFUSET0", [(base, 0)]),
+            ]
+            return False, uv_perm, levels
         uv_perm = (
             _tex_stage(base, 0),
             _tex_stage(spec, 1),
@@ -577,12 +597,14 @@ def _bbox_corners(bbox_min, bbox_max):
 
 
 def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0,
-                       include_faces=True):
+                       include_faces=True, drop_flat_tangents=False):
     """Convert raw rF2 GMT v2.52 bytes to AMS1/rF1 GMT v2.20 bytes.
 
     Already-converted rF1 GMT v2.20 inputs are returned unchanged.
     When ``include_faces`` is False (for non-collidable visual-only GMTs),
     collision FaceData and NormalData sections are omitted (nface=0, nnorm=0).
+    When ``drop_flat_tangents`` is True, flat-normal/flat-spec ``L2BUMPSPECMAPT0``
+    cutouts are downgraded to ``L2DIFFUSET0`` without UVTangents.
     """
     if is_rf1_gmt(data):
         return data
@@ -659,7 +681,8 @@ def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0,
                     % (anim, label))
             textures.append(tex_raw)
             pos += RF2_TEXTURE_SIZE
-        has_bump, uv_perm, levels = _map_material_for_ams1(rf2_shader, textures)
+        has_bump, uv_perm, levels = _map_material_for_ams1(
+            rf2_shader, textures, drop_flat_tangents=drop_flat_tangents)
         materials.append({
             "name": m_name,
             "flags": m_flags,
@@ -940,13 +963,14 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
     return bytes(out)
 
 
-def convert_file(path, mesh_coarsening=0.0, include_faces=True):
+def convert_file(path, mesh_coarsening=0.0, include_faces=True,
+                 drop_flat_tangents=False):
     """Convert a GMT file on disk from rF2 v2.52 to AMS1/rF1 v2.20 in place."""
     with open(path, "rb") as f:
         original = f.read()
     converted = convert_rf2_to_rf1(
         original, label=path, mesh_coarsening=mesh_coarsening,
-        include_faces=include_faces)
+        include_faces=include_faces, drop_flat_tangents=drop_flat_tangents)
     if converted is not original:
         with open(path, "wb") as f:
             f.write(converted)
