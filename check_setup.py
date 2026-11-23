@@ -133,7 +133,8 @@ def check_blender(rep, blender):
 
 def check(track_dir=None, layout=None, blender=None, install=None,
           need_blender=True, texture_scale=None, texture_scale_min_size=None,
-          road_smoothness=None, mesh_coarsening=None):
+          road_smoothness=None, mesh_coarsening=None,
+          strip_non_collidable_faces=None):
     """Print one line per check; True when nothing is missing."""
     import steam_paths
     rep = Report()
@@ -174,6 +175,7 @@ def check(track_dir=None, layout=None, blender=None, install=None,
             _fmt("texture_scale_min_size", texture_scale_min_size),
             smooth_fmt,
             coarsen_fmt,
+            _fmt("strip_non_collidable_faces", strip_non_collidable_faces),
         ]
         summary = ", ".join(parts)
         if cfg["exists"]:

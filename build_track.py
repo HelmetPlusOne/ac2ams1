@@ -258,6 +258,9 @@ def main():
                     help="road surface smoothing in [0.0, 1.0] mapped uniformly to sigma in [0m, 8m] (0 disables, 0.5 -> 4m default, 1.0 -> 8m max; overrides ac2ams1.ini [track] road_smoothness)")
     ap.add_argument("--mesh-coarsening", type=float, default=None,
                     help="deterministic Blender mesh coarsening in [0.0, 1.0] (0.0 disables, 1.0 strongest safe coarsening; overrides ac2ams1.ini [track] mesh_coarsening)")
+    ap.add_argument("--strip-non-collidable-faces",
+                    action=argparse.BooleanOptionalAction, default=None,
+                    help="strip collision FaceData/NormalData from CollTarget=False visual-only GMTs (default enabled; overrides ac2ams1.ini [track] strip_non_collidable_faces)")
     ap.add_argument("--grain", default="2")
     ap.add_argument("--detail-metres", default="2.0",
                     help="how often the game repeats a second stage detail texture")
@@ -326,6 +329,8 @@ def main():
             args.mesh_coarsening = steam_paths.validate_mesh_coarsening(args.mesh_coarsening)
         except ValueError as exc:
             raise SystemExit("--mesh-coarsening: %s" % exc)
+    if args.strip_non_collidable_faces is None:
+        args.strip_non_collidable_faces = config["strip_non_collidable_faces"]
 
     if not args.blender:
         args.blender = steam_paths.BLENDER
@@ -362,7 +367,8 @@ def main():
                              texture_scale=args.texture_scale,
                              texture_scale_min_size=args.texture_scale_min_size,
                              road_smoothness=args.road_smoothness,
-                             mesh_coarsening=args.mesh_coarsening):
+                             mesh_coarsening=args.mesh_coarsening,
+                             strip_non_collidable_faces=args.strip_non_collidable_faces):
         raise SystemExit(1)
     print("\nconverting %s" % track)
 
@@ -430,7 +436,10 @@ def main():
     cmd = stage_cmd("finalize_track.py", out, "--hour", args.hour,
                     "--ambient", args.scene_ambient,
                     "--road-smoothness", repr(args.road_smoothness),
-                    "--mesh-coarsening", repr(args.mesh_coarsening))
+                    "--mesh-coarsening", repr(args.mesh_coarsening),
+                    ("--strip-non-collidable-faces"
+                     if args.strip_non_collidable_faces
+                     else "--no-strip-non-collidable-faces"))
     preview = track_preview(args.track_dir, args.layout)
     if preview:
         cmd += ["--preview", preview, "--texconv", steam_paths.TEXCONV]

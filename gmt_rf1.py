@@ -576,10 +576,13 @@ def _bbox_corners(bbox_min, bbox_max):
     )
 
 
-def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
+def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0,
+                       include_faces=True):
     """Convert raw rF2 GMT v2.52 bytes to AMS1/rF1 GMT v2.20 bytes.
 
     Already-converted rF1 GMT v2.20 inputs are returned unchanged.
+    When ``include_faces`` is False (for non-collidable visual-only GMTs),
+    collision FaceData and NormalData sections are omitted (nface=0, nnorm=0).
     """
     if is_rf1_gmt(data):
         return data
@@ -696,14 +699,21 @@ def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
     # Assemble rF1 GMT v2.20 binary.
     out = bytearray(RF1_HEADER_SIZE + nmesh * RF1_MESH_SIZE)
 
-    face_bytes, norm_bytes, out_nnorm = _rebuild_faces_and_normals(
-        data, voff, vcount, foff, nface, noff, nnorm)
+    if include_faces:
+        face_bytes, norm_bytes, out_nnorm = _rebuild_faces_and_normals(
+            data, voff, vcount, foff, nface, noff, nnorm)
+        out_nface = nface
+    else:
+        face_bytes, norm_bytes, out_nface, out_nnorm = b"", b"", 0, 0
 
     # Deduplicate vertices per mesh and remap triangle & face indices.
-    if _np is not None:
-        global_remap = _np.arange(vcount, dtype=_np.uint16)
+    if include_faces:
+        if _np is not None:
+            global_remap = _np.arange(vcount, dtype=_np.uint16)
+        else:
+            global_remap = list(range(vcount))
     else:
-        global_remap = list(range(vcount))
+        global_remap = None
 
     mesh_payloads = []
     new_vstart = 0
@@ -719,7 +729,7 @@ def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
         tris_bytes = _remap_triangles(
             data, toff + m_tstart * 2, m_tcount, remap, m_vcount)
 
-        if m_vcount:
+        if include_faces and m_vcount:
             if _np is not None:
                 global_remap[m_vstart:m_vstart + m_vcount] = (
                     remap.astype(_np.uint32) + new_vstart).astype(_np.uint16)
@@ -733,7 +743,8 @@ def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
             verts_bytes, uvs_bytes, tans_bytes, tris_bytes,
         ))
 
-    face_bytes = _remap_face_vertices(face_bytes, nface, global_remap, vcount)
+    if include_faces:
+        face_bytes = _remap_face_vertices(face_bytes, nface, global_remap, vcount)
 
     face_off = len(out)
     out.extend(face_bytes)
@@ -815,10 +826,10 @@ def convert_rf2_to_rf1(data, label="GMT", mesh_coarsening=0.0):
         "<8I", out, 0x174,
         nmesh,
         RF1_HEADER_SIZE - 4,
-        nface,
-        face_off - 4,
+        out_nface,
+        (face_off - 4) if out_nface else 0,
         out_nnorm,
-        norm_off - 4,
+        (norm_off - 4) if out_nnorm else 0,
         0,
         (first_vert_off - 4) if first_vert_off is not None else 0,
     )
@@ -929,12 +940,13 @@ def make_quad_rf1_gmt(name, corners, texture="_invisible.dds"):
     return bytes(out)
 
 
-def convert_file(path, mesh_coarsening=0.0):
+def convert_file(path, mesh_coarsening=0.0, include_faces=True):
     """Convert a GMT file on disk from rF2 v2.52 to AMS1/rF1 v2.20 in place."""
     with open(path, "rb") as f:
         original = f.read()
     converted = convert_rf2_to_rf1(
-        original, label=path, mesh_coarsening=mesh_coarsening)
+        original, label=path, mesh_coarsening=mesh_coarsening,
+        include_faces=include_faces)
     if converted is not original:
         with open(path, "wb") as f:
             f.write(converted)

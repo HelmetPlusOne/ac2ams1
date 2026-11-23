@@ -34,6 +34,17 @@ DEFAULT_TEXTURE_SCALE = 0.5
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
 DEFAULT_ROAD_SMOOTHNESS = 0.5
 DEFAULT_MESH_COARSENING = 0.0
+DEFAULT_STRIP_NON_COLLIDABLE_FACES = True
+
+
+def parse_bool_option(raw, name):
+    """Parse an INI boolean (true/false, 1/0, yes/no, on/off)."""
+    low = str(raw).strip().lower()
+    if low in ("1", "true", "yes", "on"):
+        return True
+    if low in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("%s must be a boolean (true/false), got %r" % (name, raw))
 
 
 def validate_mesh_coarsening(coarsening):
@@ -190,6 +201,8 @@ def load_config(base_dir=None):
         "road_smooth_sigma": road_smoothness_to_sigma(DEFAULT_ROAD_SMOOTHNESS),
         "mesh_coarsening": DEFAULT_MESH_COARSENING,
         "mesh_coarsening_source": "default",
+        "strip_non_collidable_faces": DEFAULT_STRIP_NON_COLLIDABLE_FACES,
+        "strip_non_collidable_faces_source": "default",
     }
     if not os.path.isfile(ini_path):
         return result
@@ -261,6 +274,12 @@ def load_config(base_dir=None):
             )
         result["mesh_coarsening"] = coarsening
         result["mesh_coarsening_source"] = "ini"
+    if parser.has_option("track", "strip_non_collidable_faces"):
+        raw = parser.get("track", "strip_non_collidable_faces").strip()
+        result["strip_non_collidable_faces"] = parse_bool_option(
+            raw, "[track] strip_non_collidable_faces"
+        )
+        result["strip_non_collidable_faces_source"] = "ini"
     return result
 
 

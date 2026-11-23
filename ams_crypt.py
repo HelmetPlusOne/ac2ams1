@@ -12,9 +12,10 @@ ASSET_EXTENSIONS = {".dds", ".gmt"}
 MAX_COMMAND_CHARS = 28000
 
 
-def _prepare_gmt_for_ams1(path, mesh_coarsening=0.0):
+def _prepare_gmt_for_ams1(path, mesh_coarsening=0.0, include_faces=True):
     """Convert rF2 GMT v2.52 exports to AMS1/rF1 GMT v2.20 before encryption."""
-    gmt_rf1.convert_file(path, mesh_coarsening=mesh_coarsening)
+    gmt_rf1.convert_file(
+        path, mesh_coarsening=mesh_coarsening, include_faces=include_faces)
 
 
 def _library():
@@ -89,9 +90,18 @@ def _encrypt_with_executable(files, executable):
         _run_encryptor(executable, batch)
 
 
-def encrypt_assets(root, mesh_coarsening=0.0):
-    """Encrypt all loose GMT and DDS assets under a staged location."""
+def encrypt_assets(root, mesh_coarsening=0.0, collidable_gmts=None):
+    """Encrypt all loose GMT and DDS assets under a staged location.
+
+    When ``collidable_gmts`` is provided (a collection of lowercased GMT
+    basenames), only those GMTs keep FaceData/NormalData collision tables;
+    non-collidable visual GMTs are converted with ``include_faces=False``.
+    """
     tools = _library()
+    collidable = (
+        {name.lower() for name in collidable_gmts}
+        if collidable_gmts is not None else None
+    )
     files = []
     for folder, _, names in os.walk(root):
         for name in names:
@@ -105,7 +115,13 @@ def encrypt_assets(root, mesh_coarsening=0.0):
         if signature == AMS_SIGNATURE:
             continue
         if os.path.splitext(path)[1].lower() == ".gmt":
-            _prepare_gmt_for_ams1(path, mesh_coarsening=mesh_coarsening)
+            include_faces = (
+                True if collidable is None
+                else os.path.basename(path).lower() in collidable
+            )
+            _prepare_gmt_for_ams1(
+                path, mesh_coarsening=mesh_coarsening,
+                include_faces=include_faces)
         to_encrypt.append(path)
 
     if to_encrypt:

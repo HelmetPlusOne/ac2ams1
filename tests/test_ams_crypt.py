@@ -761,12 +761,20 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smooth_sigma"], 4.0)
             self.assertEqual(cfg["mesh_coarsening"], 0.0)
             self.assertEqual(cfg["mesh_coarsening_source"], "default")
+            self.assertTrue(cfg["strip_non_collidable_faces"])
+            self.assertEqual(cfg["strip_non_collidable_faces_source"], "default")
             self.assertNotIn("road_smooth", cfg)
 
             # Partial ini marks only specified keys as read from ini.
             ini = os.path.join(root, "ac2ams1.ini")
             with open(ini, "w", encoding="utf-8") as f:
-                f.write("[track]\ntexture_scale=0.25 # quarter\nroad_smoothness=0\nmesh_coarsening=0.6\n")
+                f.write(
+                    "[track]\n"
+                    "texture_scale=0.25 # quarter\n"
+                    "road_smoothness=0\n"
+                    "mesh_coarsening=0.6\n"
+                    "strip_non_collidable_faces=false\n"
+                )
             cfg = steam_paths.load_config(root)
             self.assertTrue(cfg["exists"])
             self.assertEqual(cfg["texture_scale"], 0.25)
@@ -778,6 +786,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["road_smooth_sigma"], 0.0)
             self.assertEqual(cfg["mesh_coarsening"], 0.6)
             self.assertEqual(cfg["mesh_coarsening_source"], "ini")
+            self.assertFalse(cfg["strip_non_collidable_faces"])
+            self.assertEqual(cfg["strip_non_collidable_faces_source"], "ini")
 
             # Uniform road_smoothness [0.0, 1.0] -> road_smooth_sigma [0.0, 8.0]
             # with arbitrary floating-point precision.
@@ -827,6 +837,13 @@ class StandaloneCliTests(unittest.TestCase):
             for bad in ("-0.01", "1.01", "nan", "inf", "abc"):
                 with open(ini, "w", encoding="utf-8") as f:
                     f.write("[track]\nmesh_coarsening=%s\n" % bad)
+                with self.assertRaises(ValueError):
+                    steam_paths.load_config(root)
+
+            # Invalid boolean for strip_non_collidable_faces raises ValueError.
+            for bad in ("maybe", "2", ""):
+                with open(ini, "w", encoding="utf-8") as f:
+                    f.write("[track]\nstrip_non_collidable_faces=%s\n" % bad)
                 with self.assertRaises(ValueError):
                     steam_paths.load_config(root)
 
@@ -1399,6 +1416,102 @@ class StandaloneCliTests(unittest.TestCase):
             xv, xu, xf, xn, 0.5, max_comp_tris=128)
         self.assertEqual(len(xf50), 80)  # 20 whole 4-tri X-trees kept
         self.assertEqual(len(xf50) % 4, 0)
+
+    def test_strip_faces_on_non_collidable_gmts(self):
+        rf2 = _make_rf2_gmt(
+            "scenery",
+            shader="L2DIFFUSET0",
+            textures=[("wall.dds", 0x18, 1, 3, 0, 0)],
+        )
+        with_faces = gmt_rf1.convert_rf2_to_rf1(rf2, include_faces=True)
+        no_faces = gmt_rf1.convert_rf2_to_rf1(rf2, include_faces=False)
+        self.assertTrue(gmt_rf1.is_rf1_gmt(no_faces))
+
+        # Check RF1 header at 0x174: nmesh, moff, nface, foff, nnorm, noff, unk, voff
+        nm1, mo1, nf1, fo1, nn1, no1, _, vo1 = struct.unpack_from("<8I", with_faces, 0x174)
+        nm0, mo0, nf0, fo0, nn0, no0, _, vo0 = struct.unpack_from("<8I", no_faces, 0x174)
+        self.assertEqual((nm0, mo0), (nm1, mo1))
+        self.assertGreater(nf1, 0)
+        self.assertGreater(nn1, 0)
+        self.assertEqual((nf0, fo0, nn0, no0), (0, 0, 0, 0))
+        self.assertGreater(vo0, 0)
+        expected_saved = nf1 * gmt_rf1.FACE_SIZE + nn1 * gmt_rf1.NORMAL_SIZE
+        self.assertEqual(len(with_faces) - len(no_faces), expected_saved)
+
+        # Mesh descriptor vertex/triangle counts and material table remain intact.
+        m1 = struct.unpack_from("<10I", with_faces, gmt_rf1.RF1_HEADER_SIZE)
+        m0 = struct.unpack_from("<10I", no_faces, gmt_rf1.RF1_HEADER_SIZE)
+        self.assertEqual(m0[6], m1[6])  # new_vcount
+        self.assertEqual(m0[8], m1[8])  # m_tcount
+        mat_off0 = struct.unpack_from("<I", no_faces, 0)[0] + 4
+        self.assertEqual(struct.unpack_from("<I", no_faces, mat_off0)[0], 1)
+
+        # Pure-Python fallback parity with include_faces=False.
+        with mock.patch.object(gmt_rf1, "_np", None):
+            no_faces_py = gmt_rf1.convert_rf2_to_rf1(rf2, include_faces=False)
+        self.assertEqual(no_faces, no_faces_py)
+
+        # ams_crypt.encrypt_assets strips faces only on non-collidable GMTs.
+        with tempfile.TemporaryDirectory() as root:
+            phys_p = os.path.join(root, "1ROAD.gmt")
+            vis_p = os.path.join(root, "tree.gmt")
+            with open(phys_p, "wb") as f:
+                f.write(rf2)
+            with open(vis_p, "wb") as f:
+                f.write(rf2)
+
+            seen_flags = {}
+
+            def fake_encrypt(src, dst, key, sig):
+                with open(src, "rb") as fh:
+                    raw = fh.read()
+                _, _, nf, _, nn, _, _, _ = struct.unpack_from("<8I", raw, 0x174)
+                seen_flags[os.path.basename(src)] = (nf, nn)
+                with open(dst, "wb") as fh:
+                    fh.write(struct.pack("<QQ", sig ^ key, key))
+
+            fake_tools = types.SimpleNamespace(encrypt_file=fake_encrypt)
+            with mock.patch.object(ams_crypt, "_library", return_value=fake_tools):
+                ams_crypt.encrypt_assets(root, collidable_gmts={"1road.gmt"})
+
+            self.assertGreater(seen_flags["1ROAD.gmt"][0], 0)
+            self.assertEqual(seen_flags["tree.gmt"], (0, 0))
+
+            # finalize_track honors --no-strip-non-collidable-faces vs enabled default.
+            import json
+            out_dir = os.path.join(root, "sample_strip")
+            gmt_dir = os.path.join(out_dir, "gmt")
+            os.makedirs(gmt_dir)
+            rows = [
+                {"gmt": "xfinish.gmt", "mesh": "xfinish", "physical": True, "timing": True, "tris": 2},
+                {"gmt": "xsector1.gmt", "mesh": "xsector1", "physical": True, "timing": True, "tris": 2},
+                {"gmt": "xsector2.gmt", "mesh": "xsector2", "physical": True, "timing": True, "tris": 2},
+                {"gmt": "tree.gmt", "mesh": "tree", "physical": False, "render": True, "tris": 2},
+            ]
+            for r in rows:
+                with open(os.path.join(gmt_dir, r["gmt"]), "wb") as f:
+                    f.write(b"mesh")
+            with open(os.path.join(gmt_dir, "exported.json"), "w") as f:
+                json.dump(rows, f)
+            with open(os.path.join(out_dir, "sample_strip.tdf"), "w") as f:
+                f.write("[TRACKVARS]\n")
+
+            recorded = []
+
+            def fake_encrypt_assets(stage, **kwargs):
+                recorded.append(kwargs.get("collidable_gmts"))
+                return 4
+
+            with mock.patch("ams_crypt.encrypt_assets", side_effect=fake_encrypt_assets):
+                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--strip-non-collidable-faces"]):
+                    finalize_track.main()
+                with mock.patch.object(sys, "argv", ["finalize_track.py", out_dir, "--no-strip-non-collidable-faces"]):
+                    finalize_track.main()
+
+            self.assertIsNotNone(recorded[0])
+            self.assertNotIn("tree.gmt", recorded[0])
+            self.assertIn("xfinish.gmt", recorded[0])
+            self.assertIsNone(recorded[1])
 
 
 if __name__ == "__main__":
