@@ -2,7 +2,7 @@
 
 Standalone Windows distribution for converting Assetto Corsa (AC) tracks into
 Automobilista 1 (AMS1) locations. No pre-installed Python, Blender, Assetto
-Corsa, Automobilista 1, or rFactor 2 is required.
+Corsa, Automobilista 1, or rFactor 2 is required. Drag and drop AC track folder onto the `ac2ams1.exe`.
 
 Converted tracks are automatically installed into the `out\` folder next to
 `ac2ams1.exe`. To play a converted track in AMS1, copy `out\<track>\` into
@@ -10,7 +10,7 @@ Converted tracks are automatically installed into the `out\` folder next to
 
 ## Changelog
 
-### TBD
+### 23 Nov 2026
 
 - **Malformed DDS byte-size re-encoding and collision-shell handling (e.g. Road Atlanta `jr_road_atlanta_2022`)**: Updated `fix_textures.py` (and `verify_install.py`) to validate block-compressed DDS file sizes against their header dimensions and mip counts and re-encode mismatched files via `texconv` (fixing AMS1 `Error loading texture ... for material wall_NULL` caused by Road Atlanta's 224-byte vs. expected 176-byte 4x4 DXT5 texture); also marked non-rendered collision-only meshes `Render=False Change=False` in `.scn` and sanitized reserved `NULL`/`NONE` texture and material names.
 - **Texture downscale destination floor (`texture_scale_min_size`)**: In addition to skipping textures smaller than `texture_scale_min_size`, scaled textures are now clamped so their larger dimension is not reduced below the first power-of-two size smaller than `texture_scale_min_size` (e.g. with default `1024` and `texture_scale=0.25`, `1024x1024` scales to `512x512` instead of `256x256`; no change for `texture_scale=0.5`).
