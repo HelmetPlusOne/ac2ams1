@@ -73,6 +73,11 @@ def _rf2_tex_to_rf1(tex_raw, stage):
     """Shrink a 180-byte rF2 texture record to the 172-byte AMS1/rF1 layout."""
     out = bytearray(RF1_TEXTURE_SIZE)
     out[:108] = tex_raw[:108]
+    tex_name = tex_raw[:64].split(b"\x00", 1)[0].decode("ascii", errors="replace")
+    base, ext = os.path.splitext(tex_name)
+    if base.upper() in {"NULL", "NONE", "NIL", "EMPTY"}:
+        safe_name = "tex_" + base.lower() + (ext or ".dds")
+        out[:64] = _pad_ascii(safe_name, 64)
     struct.pack_into("<I", out, 88, stage)
     flags = struct.unpack_from("<I", out, 64)[0]
     alpha_ref = struct.unpack_from("<I", out, 100)[0]
