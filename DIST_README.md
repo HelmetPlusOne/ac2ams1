@@ -1,14 +1,14 @@
 # AC to Automobilista 1 — Standalone Converter
 
-Standalone Windows distribution for converting Assetto Corsa (AC) tracks into
-Automobilista 1 (AMS1) locations. No pre-installed Python, Blender, Assetto
-Corsa, Automobilista 1, or rFactor 2 is required. Drag and drop AC track folder onto the `ac2ams1.exe`.
+Standalone Windows distribution for converting Assetto Corsa (AC) tracks into Automobilista 1 (AMS1) locations. No pre-installed Python, Blender, Assetto Corsa, Automobilista 1, or rFactor 2 is required. Drag and drop AC track folder onto the `ac2ams1.exe`.
 
-Converted tracks are automatically installed into the `out\` folder next to
-`ac2ams1.exe`. To play a converted track in AMS1, copy `out\<track>\` into
-`<Automobilista>\GameData\Locations\`.
+Converted tracks are automatically installed into the `out\` folder next to `ac2ams1.exe`. To play a converted track in AMS1, copy `out\<track>\` into `<Automobilista>\GameData\Locations\`.
 
 ## Changelog
+
+### TBD
+
+- **Preserve all-zero alpha in `bake_layers.py` (fixes solid pink/magenta transparent marker overlays)**: Switched `bake_layers.py` (`write_dds`, `write_base`, `even_mip_detail`) from writing intermediate 32-bit `.tga` files to uncompressed 32-bit BGRA8 `.dds` (`write_uncompressed_dds`) before invoking `texconv.exe`, working around DirectXTex's legacy TGA loader heuristic that rewrote all-zero alpha channels to `255` (100% opaque) and turned invisible alpha-tested marker/helper meshes into solid magenta geometry.
 
 ### 23 Nov 2026
 
