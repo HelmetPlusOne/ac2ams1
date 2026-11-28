@@ -1,4 +1,4 @@
-# Assetto Corsa to Automobilista 1 — Standalone Track Converter
+# Assetto Corsa to Automobilista 1 - Standalone Track Converter
 
 Standalone Windows distribution for converting Assetto Corsa (AC) tracks into Automobilista 1 (AMS1) locations. No pre-installed Python, Blender, Assetto Corsa, Automobilista 1, or rFactor 2 is required. Drag and drop AC track folder onto the `ac2ams1.exe`.
 
