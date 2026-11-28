@@ -1919,6 +1919,27 @@ class StandaloneCliTests(unittest.TestCase):
                      "checksums", "data", "tcl", "tk", "tcl85.dll", "tk85.dll", "_tkinter.pyd"):
             self.assertIn(drop, skipped)
 
+        # 6. release_dist_dir and create_release_archive build ac2ams1_YYYYMMDD.7z + sha256.
+        import datetime
+        import sha256sum
+        with tempfile.TemporaryDirectory() as tmp:
+            rel_dir = build_dist.release_dist_dir(tmp, today=datetime.date(2026, 11, 28))
+            self.assertEqual(rel_dir, os.path.join(tmp, "ac2ams1_20261128"))
+            os.makedirs(rel_dir)
+
+            def fake_7z(cmd, cwd=None):
+                with open(os.path.join(cwd, cmd[2]), "wb") as fh:
+                    fh.write(b"fake-7z-payload")
+                return types.SimpleNamespace(returncode=0)
+
+            with mock.patch.object(build_dist.subprocess, "run", side_effect=fake_7z):
+                archive_path, checksum_path, digest = build_dist.create_release_archive(rel_dir, "7z.exe")
+            self.assertEqual(archive_path, os.path.join(tmp, "ac2ams1_20261128.7z"))
+            self.assertEqual(checksum_path, os.path.join(tmp, "ac2ams1_20261128.7z.sha256.txt"))
+            self.assertEqual(digest, sha256sum.sha256_file(archive_path))
+            with open(checksum_path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "%s  ac2ams1_20261128.7z\n" % digest)
+
     def test_csp_hidden_meshes_reads_ext_config_is_renderable_zero(self):
         import convert_track
 
