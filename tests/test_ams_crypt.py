@@ -1904,6 +1904,21 @@ class StandaloneCliTests(unittest.TestCase):
             os.makedirs(os.path.join(expected_dist, "data"))
             self.assertTrue(steam_paths.dist_ready(expected_dist))
 
+        # 5. _ignore_rfactortools strips unused GUI/Tcl/Tk/checksums while keeping CLI runtime.
+        import build_dist
+        skipped = build_dist._ignore_rfactortools(".", [
+            "masunpack.exe", "rfactorcrypt.exe", "python33.dll", "library.zip",
+            "rfactortools._crypt.pyd", "PIL._imaging.pyd", "COPYING.txt",
+            "rfactortools-gui.exe", "minised-gui.exe", "maspack.exe",
+            "checksums", "data", "tcl", "tk", "tcl85.dll", "tk85.dll", "_tkinter.pyd",
+        ])
+        for keep in ("masunpack.exe", "rfactorcrypt.exe", "python33.dll", "library.zip",
+                     "rfactortools._crypt.pyd", "PIL._imaging.pyd", "COPYING.txt"):
+            self.assertNotIn(keep, skipped)
+        for drop in ("rfactortools-gui.exe", "minised-gui.exe", "maspack.exe",
+                     "checksums", "data", "tcl", "tk", "tcl85.dll", "tk85.dll", "_tkinter.pyd"):
+            self.assertIn(drop, skipped)
+
 
 if __name__ == "__main__":
     unittest.main()

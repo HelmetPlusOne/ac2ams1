@@ -183,6 +183,10 @@ def find_rfactortools_dir(explicit, fallback_dist=None):
         if os.path.isfile(path):
             path = os.path.dirname(path)
         return path
+    env_rt = os.environ.get("AC2AMS_RFACTORTOOLS")
+    if env_rt:
+        path = os.path.abspath(env_rt)
+        return os.path.dirname(path) if os.path.isfile(path) else path
     env_enc = os.environ.get("AC2AMS_ENCRYPTOR")
     if env_enc:
         path = os.path.abspath(env_enc)
@@ -234,6 +238,21 @@ def _ignore_blender(_dirpath, names):
 
 def _ignore_pycache(_dirpath, names):
     return {n for n in names if n == "__pycache__"}
+
+
+_RFACTORTOOLS_SKIP_DIRS = frozenset({"checksums", "data", "tcl", "tk", "__pycache__"})
+_RFACTORTOOLS_SKIP_FILES = frozenset({
+    "maspack.exe", "minised-gui.exe", "rfactortools-gui.exe",
+    "logo.png", "tcl85.dll", "tk85.dll", "_tkinter.pyd",
+})
+
+
+def _ignore_rfactortools(_dirpath, names):
+    """Skip unused GUI binaries/Tcl/Tk/checksums from rfactortools while keeping CLI runtime."""
+    return {
+        n for n in names
+        if n.lower() in _RFACTORTOOLS_SKIP_DIRS or n.lower() in _RFACTORTOOLS_SKIP_FILES
+    }
 
 
 def dir_size_mb(path):
@@ -367,10 +386,10 @@ def main(argv=None):
     os.makedirs(texconv_dst, exist_ok=True)
     shutil.copy2(texconv_src, os.path.join(texconv_dst, "texconv.exe"))
 
-    # 4. Copy rfactortools (rfactorcrypt.exe + bundled Python 3.3 runtime).
+    # 4. Copy rfactortools (rfactorcrypt.exe + bundled Python 3.3 runtime, trimming GUI/Tk files).
     rft_dst = os.path.join(dist_dir, "tools", "rfactortools")
     print("Copying rfactortools -> %s ..." % rft_dst, flush=True)
-    shutil.copytree(rfactortools_src, rft_dst, ignore=_ignore_pycache)
+    shutil.copytree(rfactortools_src, rft_dst, ignore=_ignore_rfactortools)
 
     # 5. Copy standalone template data from AC and AMS1.
     ac_data_dst = os.path.join(dist_dir, "data", "ac", "system", "data")
