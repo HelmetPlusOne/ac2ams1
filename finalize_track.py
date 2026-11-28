@@ -626,6 +626,81 @@ SKY_ASSETS = (
     "SRPL_SKY3_SUN1.GMT",
 )
 
+RESERVED_HELPER_GMTS = frozenset({"skyboxi.gmt", "xpitin.gmt", "xpitout.gmt"})
+BARRIER_MAT_PREFIXES = ("wall_", "twal_", "twall_", "grdr_", "safer_", "cwal_", "cmwl_", "cema_")
+BARRIER_SURFACE_KEYS = ("WALL", "TYREWALL", "GUARDRAIL", "SAFER")
+OFFROAD_MAT_PREFIXES = ("gras_", "grvl_", "dstg_", "dirt_", "sand_")
+OFFROAD_SURFACE_KEYS = ("GRASS", "TERRAIN", "GRAVEL", "SAND", "DIRT")
+# Oversized outer-terrain triangles (>50m) in AC 1GRASS_* meshes bloat gMotor
+# 2.0's 2D XZ HTree quadtree and can crash track loading on large AC tracks.
+MAX_TERRAIN_HAT_SPAN = 50.0
+
+
+def _surface_stem(row):
+    meta = row.get("_meta") or {}
+    surf = (meta.get("surface") or "").strip().upper()
+    if surf:
+        return re.sub(r"[^A-Z].*$", "", surf)
+    raw = os.path.splitext(row.get("mesh") or row.get("gmt") or "")[0]
+    return raw.lstrip("0123456789").upper()
+
+
+def is_barrier_row(row):
+    """Return True for vertical collision barriers (walls/guardrails/tyrewalls).
+
+    Barriers stay CollTarget=True for vehicle impacts, but must be HATTarget=False
+    so they never bloat AMS1's 2D XZ HTree or sit above pit stalls as fake ground.
+    """
+    if not row.get("physical") or row.get("timing"):
+        return False
+    meta = row.get("_meta") or {}
+    rf2_mat = (meta.get("rf2_material") or "").lower()
+    if rf2_mat.startswith(BARRIER_MAT_PREFIXES):
+        return True
+    stem = _surface_stem(row)
+    return any(stem.startswith(k) for k in BARRIER_SURFACE_KEYS)
+
+
+def is_offroad_terrain_row(row):
+    """Return True for physical off-road terrain (grass/gravel/sand/dirt)."""
+    if not row.get("physical") or row.get("timing") or is_barrier_row(row):
+        return False
+    meta = row.get("_meta") or {}
+    rf2_mat = (meta.get("rf2_material") or "").lower()
+    if rf2_mat.startswith(OFFROAD_MAT_PREFIXES):
+        return True
+    stem = _surface_stem(row)
+    return any(stem.startswith(k) for k in OFFROAD_SURFACE_KEYS)
+
+
+def disable_empty_hat_instances(scn_path, empty_gmts):
+    """Clear CollTarget/HATTarget on instances whose GMT has 0 collision faces."""
+    if not empty_gmts:
+        return 0
+    empty_low = {name.lower() for name in empty_gmts}
+    with open(scn_path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    changed = 0
+
+    def _patch(match):
+        nonlocal changed
+        head, body = match.group(1), match.group(2)
+        if "Response=VEHICLE," in body:
+            return match.group(0)
+        mf = re.search(r"MeshFile=([^\s]+)", body)
+        if mf and mf.group(1).lower() in empty_low and (
+            "CollTarget=True" in body or "HATTarget=True" in body
+        ):
+            body = body.replace("CollTarget=True", "CollTarget=False")
+            body = body.replace("HATTarget=True", "HATTarget=False")
+            changed += 1
+        return head + body + "}"
+
+    updated = re.sub(r"(Instance=[^\r\n]+\r?\n\{)([^}]*)\}", _patch, text)
+    if changed:
+        write(scn_path, updated)
+    return changed
+
 
 def stage_skybox(stage_dir, locations, venue):
     """Stage AMS1's required skyboxi / CLOUDS / Sky hierarchy.
@@ -899,6 +974,23 @@ def main():
     # them.
     exported.sort(key=lambda r: (bool(r.get("blend")), -float(r.get("radius", 0.0))))
 
+    # Prevent AC meshes named skyboxi/xpitin/xpitout from colliding with AMS1's
+    # required helper GMTs staged by stage_skybox() / stage_pit_gates().
+    existing_gmts = {r["gmt"].lower() for r in exported}
+    gmt_rename_map = {}
+    for row in exported:
+        src_low = row["gmt"].lower()
+        if src_low in RESERVED_HELPER_GMTS and not row.get("timing"):
+            base, ext = os.path.splitext(row["gmt"])
+            cand = "track_" + base + ext
+            idx = 2
+            while cand.lower() in existing_gmts or cand.lower() in RESERVED_HELPER_GMTS:
+                cand = "track_%s_%d%s" % (base, idx, ext)
+                idx += 1
+            gmt_rename_map[src_low] = cand
+            existing_gmts.add(cand.lower())
+            row["gmt"] = cand
+
     skybox = stage_skybox(stage, args.install, venue)
     sx, sy, sz = sun_direction(out_dir)
     max_shadow_range = 250.0 if args.track_shadows == "full" else 200.0
@@ -917,9 +1009,9 @@ def main():
         coll = "True" if row["physical"] else "False"
         if row["physical"]:
             phys += 1
-        # Timing strips collide but must not act as ground, or the car sits on
-        # them instead of the road.
-        hat = "False" if row.get("timing") else coll
+        # Timing strips and vertical collision barriers must not act as ground
+        # in AMS1's 2D XZ HTree, or the car sits on them instead of the road.
+        hat = "False" if (row.get("timing") or is_barrier_row(row)) else coll
         # Timing gates and collision-only shells must never be rendered. Check
         # timing first because blender_stage records timing rows without a
         # "render" key (so row.get("render", True) is True).
@@ -982,9 +1074,12 @@ def main():
     for f in os.listdir(gmt_dir):
         if not f.lower().endswith(".gmt"):
             continue
-        if args.minimal and f.lower() not in wanted:
+        dst_name = gmt_rename_map.get(f.lower(), f)
+        if dst_name.lower() in RESERVED_HELPER_GMTS:
             continue
-        shutil.copy2(os.path.join(gmt_dir, f), gmts)
+        if args.minimal and dst_name.lower() not in wanted:
+            continue
+        shutil.copy2(os.path.join(gmt_dir, f), os.path.join(gmts, dst_name))
         n_gmt += 1
 
     n_tex = 0
@@ -1045,13 +1140,29 @@ def main():
         collidable_gmts.update({"xpitin.gmt", "xpitout.gmt"})
     else:
         collidable_gmts = None
+    offroad_gmts = {
+        row["gmt"].lower()
+        for row in exported
+        if is_offroad_terrain_row(row)
+    }
+    empty_offroad = set()
     from ams_crypt import encrypt_assets
     encrypted = encrypt_assets(
         stage,
         mesh_coarsening=args.mesh_coarsening,
         collidable_gmts=collidable_gmts,
         drop_flat_tangents=bool(args.strip_unused_gmt_data),
+        max_face_span_gmts=offroad_gmts,
+        max_face_span=MAX_TERRAIN_HAT_SPAN,
+        empty_face_gmts=empty_offroad,
     )
+    if empty_offroad:
+        disabled = disable_empty_hat_instances(
+            os.path.join(lay_dir, layout + ".scn"), empty_offroad
+        )
+        if disabled:
+            print("  hat trim    disabled %d empty far-terrain HAT instances (>%.0fm tris)"
+                  % (disabled, MAX_TERRAIN_HAT_SPAN))
     if collidable_gmts is not None:
         print("  encrypted   %d GMT/DDS assets for AMS1 (stripped unused faces on %d visual GMTs + flat-normal tangents)"
               % (encrypted, max(0, n_gmt - len(collidable_gmts - {"xpitin.gmt", "xpitout.gmt"}))))

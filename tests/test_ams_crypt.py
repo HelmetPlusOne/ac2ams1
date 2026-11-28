@@ -1177,7 +1177,7 @@ class StandaloneCliTests(unittest.TestCase):
                           "  MeshFile=xfinish.gmt CollTarget=True HATTarget=False\n"
                           "  Response=VEHICLE,TIMING\n}", scene)
             self.assertIn("Instance=1WALL_001\n{\n  Render=False Change=False\n"
-                          "  MeshFile=1WALL_001.gmt CollTarget=True HATTarget=True\n}", scene)
+                          "  MeshFile=1WALL_001.gmt CollTarget=True HATTarget=False\n}", scene)
             self.assertIn("Instance=vis\n{\n  MeshFile=vis.gmt CollTarget=False HATTarget=False ShadowReceiver=False\n}", scene)
 
     def test_fix_textures_reencodes_malformed_dds_byte_size(self):
@@ -1437,11 +1437,15 @@ class StandaloneCliTests(unittest.TestCase):
         self.assertEqual(len(xf50) % 4, 0)
 
     def test_strip_faces_on_non_collidable_gmts(self):
-        rf2 = _make_rf2_gmt(
+        rf2_buf = bytearray(_make_rf2_gmt(
             "scenery",
             shader="L2DIFFUSET0",
             textures=[("wall.dds", 0x18, 1, 3, 0, 0)],
-        )
+        ))
+        # Give vertex 2 a non-collinear Z so the triangle has non-zero area.
+        voff = struct.unpack_from("<I", rf2_buf, 0x140)[0] + 4
+        struct.pack_into("<3f", rf2_buf, voff + 2 * gmt_rf1.RF2_VERTEX_SIZE, 0.0, 1.0, 4.0)
+        rf2 = bytes(rf2_buf)
         with_faces = gmt_rf1.convert_rf2_to_rf1(rf2, include_faces=True)
         no_faces = gmt_rf1.convert_rf2_to_rf1(rf2, include_faces=False)
         self.assertTrue(gmt_rf1.is_rf1_gmt(no_faces))
@@ -1678,6 +1682,118 @@ class StandaloneCliTests(unittest.TestCase):
         self.assertEqual(finalize_track.ams_lod_range(hut_meta, {"physical": False, "radius": 15.0}), (0.0, 600.0))
         grass_meta = dict(tree_meta, shader="ksGrass")
         self.assertEqual(finalize_track.ams_lod_range(grass_meta, {"physical": False, "radius": 120.0}), (0.0, 250.0))
+
+    def test_drops_degenerate_and_oversized_collision_faces_and_guards_helpers(self):
+        # Case A: degenerate zero-area face is dropped (NumPy and pure-Python parity).
+        degen = bytearray(_make_rf2_gmt("1ROAD_degen"))
+        (_vc, voff_r, _tc, _to, _nm, _mo, _nf, _fo, _nn, noff_r, _bc, _bo) = struct.unpack_from("<12I", degen, 0x13C)
+        voff, noff = voff_r + 4, noff_r + 4
+        for vi, (x, y, z) in enumerate(((1.0, 2.0, 3.0), (5.0, 2.0, 3.0), (1.0, 2.0, 3.0))):
+            struct.pack_into("<3f", degen, voff + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
+        struct.pack_into("<3fI", degen, noff, 0.0, 0.0, 0.0, 0)
+
+        fast_d = gmt_rf1.convert_rf2_to_rf1(bytes(degen))
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure_d = gmt_rf1.convert_rf2_to_rf1(bytes(degen))
+        self.assertEqual(fast_d, pure_d)
+        _nm, _mo, nface_d, _fo, nnorm_d, _no = struct.unpack_from("<6I", fast_d, 0x174)
+        self.assertEqual((nface_d, nnorm_d), (0, 0))
+
+        # Case B: oversized triangle (80m x 40m) kept when max_face_span=None, dropped when 50.0.
+        big = bytearray(_make_rf2_gmt("1GRASS_big"))
+        for vi, (x, y, z) in enumerate(((0.0, 0.0, 0.0), (80.0, 0.0, 0.0), (0.0, 0.0, 40.0))):
+            struct.pack_into("<3f", big, voff + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
+
+        kept = gmt_rf1.convert_rf2_to_rf1(bytes(big), max_face_span=None)
+        self.assertEqual(struct.unpack_from("<I", kept, 0x17C)[0], 1)
+        fast_b = gmt_rf1.convert_rf2_to_rf1(bytes(big), max_face_span=50.0)
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure_b = gmt_rf1.convert_rf2_to_rf1(bytes(big), max_face_span=50.0)
+        self.assertEqual(fast_b, pure_b)
+        _nm, _mo, nface_b, _fo, nnorm_b, _no = struct.unpack_from("<6I", fast_b, 0x174)
+        self.assertEqual((nface_b, nnorm_b), (0, 0))
+
+        # Case C: barrier/offroad classification + finalize_track end-to-end.
+        wall_row = {"gmt": "1WALL_01.gmt", "mesh": "1WALL_01", "physical": True,
+                    "_meta": {"surface": "WALL", "rf2_material": "wall_collision"}}
+        grass_row = {"gmt": "1GRASS_01.gmt", "mesh": "1GRASS_01", "physical": True,
+                     "_meta": {"surface": "GRASS", "rf2_material": "gras_terrain"}}
+        road_row = {"gmt": "1ROAD_01.gmt", "mesh": "1ROAD_01", "physical": True,
+                    "_meta": {"surface": "ROAD", "rf2_material": "road_asphalt"}}
+        self.assertTrue(finalize_track.is_barrier_row(wall_row))
+        self.assertFalse(finalize_track.is_offroad_terrain_row(wall_row))
+        self.assertFalse(finalize_track.is_barrier_row(grass_row))
+        self.assertTrue(finalize_track.is_offroad_terrain_row(grass_row))
+        self.assertFalse(finalize_track.is_barrier_row(road_row))
+        self.assertFalse(finalize_track.is_offroad_terrain_row(road_row))
+
+        def _rf2_with_tri(name, pts):
+            buf = bytearray(_make_rf2_gmt(name))
+            vo = struct.unpack_from("<I", buf, 0x140)[0] + 4
+            for vi, (x, y, z) in enumerate(pts):
+                struct.pack_into("<3f", buf, vo + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
+            return bytes(buf)
+
+        import json
+        with tempfile.TemporaryDirectory() as root:
+            venue = "hat_guard_ams"
+            layout_id = finalize_track.layout_identifier(venue)
+            out_dir = os.path.join(root, venue)
+            gmt_dir = os.path.join(out_dir, "gmt")
+            os.makedirs(gmt_dir)
+            with open(os.path.join(out_dir, venue + ".tdf"), "w") as f:
+                f.write("[TRACKVARS]\n")
+
+            small_tri = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 4.0))
+            huge_tri = ((0.0, 0.0, 0.0), (120.0, 0.0, 0.0), (0.0, 0.0, 80.0))
+            files_spec = [
+                ("xfinish.gmt", "xfinish", True, True, small_tri),
+                ("xsector1.gmt", "xsector1", True, True, small_tri),
+                ("xsector2.gmt", "xsector2", True, True, small_tri),
+                ("1ROAD_main.gmt", "1ROAD_main", True, False, huge_tri),
+                ("1WALL_01.gmt", "1WALL_01", True, False, small_tri),
+                ("1GRASS_near.gmt", "1GRASS_near", True, False, small_tri),
+                ("1GRASS_far.gmt", "1GRASS_far", True, False, huge_tri),
+                ("skyboxi.gmt", "skyboxi", False, False, small_tri),
+            ]
+            rows = []
+            for fname, mname, phys, timing, pts in files_spec:
+                with open(os.path.join(gmt_dir, fname), "wb") as f:
+                    f.write(_rf2_with_tri(mname, pts))
+                rows.append({
+                    "gmt": fname, "mesh": mname, "physical": phys,
+                    "timing": timing, "blend": False, "radius": 10.0,
+                })
+            with open(os.path.join(gmt_dir, "exported.json"), "w") as f:
+                json.dump(rows, f)
+
+            face_counts = {}
+
+            def fake_encrypt(src, dst, key, sig):
+                fc = gmt_rf1.rf1_gmt_face_count(src)
+                if fc is not None:
+                    face_counts[os.path.basename(src).lower()] = fc
+                with open(dst, "wb") as fh:
+                    fh.write(struct.pack("<QQ", sig ^ key, key))
+
+            fake_tools = types.SimpleNamespace(encrypt_file=fake_encrypt)
+            with mock.patch.object(ams_crypt, "_library", return_value=fake_tools), \
+                    mock.patch.object(sys, "argv", ["finalize_track.py", out_dir]):
+                finalize_track.main()
+
+            stage = os.path.join(out_dir, "ams1", venue)
+            with open(os.path.join(stage, layout_id, layout_id + ".scn"), encoding="utf-8") as f:
+                scn = f.read()
+
+            self.assertIn("MeshFile=1WALL_01.gmt CollTarget=True HATTarget=False", scn)
+            self.assertIn("MeshFile=1ROAD_main.gmt CollTarget=True HATTarget=True", scn)
+            self.assertEqual(face_counts["1road_main.gmt"], 1)
+            self.assertIn("MeshFile=1GRASS_near.gmt CollTarget=True HATTarget=True", scn)
+            self.assertEqual(face_counts["1grass_near.gmt"], 1)
+            self.assertEqual(face_counts["1grass_far.gmt"], 0)
+            self.assertIn("MeshFile=1GRASS_far.gmt CollTarget=False HATTarget=False", scn)
+            self.assertTrue(os.path.isfile(os.path.join(stage, "gmt", "track_skyboxi.gmt")))
+            self.assertIn("MeshFile=track_skyboxi.gmt", scn)
 
 
 if __name__ == "__main__":
