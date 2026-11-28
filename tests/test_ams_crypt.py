@@ -1713,7 +1713,18 @@ class StandaloneCliTests(unittest.TestCase):
         _nm, _mo, nface_b, _fo, nnorm_b, _no = struct.unpack_from("<6I", fast_b, 0x174)
         self.assertEqual((nface_b, nnorm_b), (0, 0))
 
-        # Case C: barrier/offroad classification + finalize_track end-to-end.
+        # Case C: corrupted long needle sliver (>50m span, <10m altitude) is dropped
+        # even when max_face_span=None (e.g. on 1ROAD_* / 1KERB_* meshes).
+        sliver = bytearray(_make_rf2_gmt("1ROAD_sliver"))
+        for vi, (x, y, z) in enumerate(((0.0, 1.0, 0.0), (200.0, 1.0, 200.0), (200.1, 1.0, 200.0))):
+            struct.pack_into("<3f", sliver, voff + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
+        fast_s = gmt_rf1.convert_rf2_to_rf1(bytes(sliver), max_face_span=None)
+        with mock.patch.object(gmt_rf1, "_np", None):
+            pure_s = gmt_rf1.convert_rf2_to_rf1(bytes(sliver), max_face_span=None)
+        self.assertEqual(fast_s, pure_s)
+        self.assertEqual(struct.unpack_from("<I", fast_s, 0x17C)[0], 0)
+
+        # Case D: barrier/offroad classification + finalize_track end-to-end.
         wall_row = {"gmt": "1WALL_01.gmt", "mesh": "1WALL_01", "physical": True,
                     "_meta": {"surface": "WALL", "rf2_material": "wall_collision"}}
         grass_row = {"gmt": "1GRASS_01.gmt", "mesh": "1GRASS_01", "physical": True,
@@ -1730,6 +1741,11 @@ class StandaloneCliTests(unittest.TestCase):
         def _rf2_with_tri(name, pts):
             buf = bytearray(_make_rf2_gmt(name))
             vo = struct.unpack_from("<I", buf, 0x140)[0] + 4
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            zs = [p[2] for p in pts]
+            struct.pack_into("<3f", buf, 0x0C8, min(xs), min(ys), min(zs))
+            struct.pack_into("<3f", buf, 0x0D4, max(xs), max(ys), max(zs))
             for vi, (x, y, z) in enumerate(pts):
                 struct.pack_into("<3f", buf, vo + vi * gmt_rf1.RF2_VERTEX_SIZE, x, y, z)
             return bytes(buf)
@@ -1743,9 +1759,12 @@ class StandaloneCliTests(unittest.TestCase):
             os.makedirs(gmt_dir)
             with open(os.path.join(out_dir, venue + ".tdf"), "w") as f:
                 f.write("[TRACKVARS]\n")
+            with open(os.path.join(out_dir, venue + ".AIW"), "w", encoding="utf-8") as f:
+                f.write("[Waypoint]\nwp_pos=(0.0,0.0,0.0)\nwp_pos=(20.0,0.0,0.0)\n")
 
             small_tri = ((0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.0, 0.0, 4.0))
             huge_tri = ((0.0, 0.0, 0.0), (120.0, 0.0, 0.0), (0.0, 0.0, 80.0))
+            remote_tri = ((500.0, 0.0, 500.0), (504.0, 0.0, 500.0), (500.0, 0.0, 504.0))
             files_spec = [
                 ("xfinish.gmt", "xfinish", True, True, small_tri),
                 ("xsector1.gmt", "xsector1", True, True, small_tri),
@@ -1754,6 +1773,7 @@ class StandaloneCliTests(unittest.TestCase):
                 ("1WALL_01.gmt", "1WALL_01", True, False, small_tri),
                 ("1GRASS_near.gmt", "1GRASS_near", True, False, small_tri),
                 ("1GRASS_far.gmt", "1GRASS_far", True, False, huge_tri),
+                ("1TERRAIN_remote.gmt", "1TERRAIN_remote", True, False, remote_tri),
                 ("skyboxi.gmt", "skyboxi", False, False, small_tri),
             ]
             rows = []
@@ -1764,6 +1784,16 @@ class StandaloneCliTests(unittest.TestCase):
                     "gmt": fname, "mesh": mname, "physical": phys,
                     "timing": timing, "blend": False, "radius": 10.0,
                 })
+            # Verify gmt_bbox_xz works for both rF2 v2.52 and rF1 v2.20 headers.
+            remote_rf2_path = os.path.join(gmt_dir, "1TERRAIN_remote.gmt")
+            self.assertEqual(gmt_rf1.gmt_bbox_xz(remote_rf2_path), (500.0, 504.0, 500.0, 504.0))
+            rf1_bbox_path = os.path.join(root, "bbox_rf1.gmt")
+            with open(remote_rf2_path, "rb") as src_f:
+                remote_rf2_bytes = src_f.read()
+            with open(rf1_bbox_path, "wb") as f:
+                f.write(gmt_rf1.convert_rf2_to_rf1(remote_rf2_bytes))
+            self.assertEqual(gmt_rf1.gmt_bbox_xz(rf1_bbox_path), (500.0, 504.0, 500.0, 504.0))
+
             with open(os.path.join(gmt_dir, "exported.json"), "w") as f:
                 json.dump(rows, f)
 
@@ -1792,6 +1822,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(face_counts["1grass_near.gmt"], 1)
             self.assertEqual(face_counts["1grass_far.gmt"], 0)
             self.assertIn("MeshFile=1GRASS_far.gmt CollTarget=False HATTarget=False", scn)
+            self.assertIn("MeshFile=1TERRAIN_remote.gmt CollTarget=False HATTarget=False", scn)
+            self.assertEqual(face_counts["1terrain_remote.gmt"], 0)
             self.assertTrue(os.path.isfile(os.path.join(stage, "gmt", "track_skyboxi.gmt")))
             self.assertIn("MeshFile=track_skyboxi.gmt", scn)
 

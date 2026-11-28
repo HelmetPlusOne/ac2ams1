@@ -447,6 +447,13 @@ def _dominant_axis_flag(nx, ny, nz):
     return 4 if nz >= 0.0 else 5
 
 
+# Corrupted long needle-sliver triangles (e.g. 50m-340m long, <10m wide) on
+# road/kerb meshes overlap hundreds of cells in AMS1's 2D XZ HTree quadtree
+# and can trigger out-of-memory aborts during track loading.
+SLIVER_SPAN_LIMIT = 50.0
+SLIVER_MAX_ALTITUDE = 10.0
+
+
 def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm,
                                max_face_span=None):
     """Rebuild rF1 FaceData (flags, centroid, bounding radius) and NormalData.
@@ -460,10 +467,11 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm,
        bounding radius, causing AMS1's HAT sphere pre-check to reject triangle
        edges/corners and produce severe artificial bumpiness.
 
-    Zero-area degenerate triangles (cross length <= 1e-6) are dropped so they
-    cannot trigger gMotor 2.0 HTree errors. When ``max_face_span`` is set (m),
-    faces whose XZ bounding box exceeds it are also dropped to prevent
-    oversized outer-terrain slivers from bloating AMS1's 2D XZ HTree quadtree.
+    Zero-area degenerate triangles (cross length <= 1e-6) and extreme needle
+    slivers (>50 m XZ span, <10 m altitude) are dropped so they cannot trigger
+    gMotor 2.0 HTree errors. When ``max_face_span`` is set (m), faces whose XZ
+    bounding box exceeds it are also dropped to prevent oversized outer-terrain
+    triangles from bloating AMS1's 2D XZ HTree quadtree.
     """
     if nface == 0:
         return b"", b"", 0
@@ -505,12 +513,22 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm,
         cross = -_np.cross(p1 - p0, p2 - p0)
         lengths = _np.linalg.norm(cross, axis=1)
         keep = valid_idx & (lengths > 1e-6)
+        dx = (_np.maximum(_np.maximum(p0[:, 0], p1[:, 0]), p2[:, 0])
+              - _np.minimum(_np.minimum(p0[:, 0], p1[:, 0]), p2[:, 0]))
+        dz = (_np.maximum(_np.maximum(p0[:, 2], p1[:, 2]), p2[:, 2])
+              - _np.minimum(_np.minimum(p0[:, 2], p1[:, 2]), p2[:, 2]))
         if span_limit is not None:
-            dx = (_np.maximum(_np.maximum(p0[:, 0], p1[:, 0]), p2[:, 0])
-                  - _np.minimum(_np.minimum(p0[:, 0], p1[:, 0]), p2[:, 0]))
-            dz = (_np.maximum(_np.maximum(p0[:, 2], p1[:, 2]), p2[:, 2])
-                  - _np.minimum(_np.minimum(p0[:, 2], p1[:, 2]), p2[:, 2]))
             keep = keep & (dx <= span_limit) & (dz <= span_limit)
+        # Drop extreme needle slivers (>50m XZ span with altitude <10m) on all meshes.
+        long_span = keep & ((dx > SLIVER_SPAN_LIMIT) | (dz > SLIVER_SPAN_LIMIT))
+        if long_span.any():
+            e0 = _np.linalg.norm(p1[long_span] - p0[long_span], axis=1)
+            e1 = _np.linalg.norm(p2[long_span] - p1[long_span], axis=1)
+            e2 = _np.linalg.norm(p0[long_span] - p2[long_span], axis=1)
+            emax = _np.maximum(_np.maximum(e0, e1), e2)
+            # lengths == 2 * area, so altitude perpendicular to longest edge is lengths / emax.
+            sliver = lengths[long_span] < (SLIVER_MAX_ALTITUDE * emax)
+            keep[long_span] = ~sliver
 
         out_nface = int(_np.count_nonzero(keep))
         if out_nface == 0:
@@ -583,10 +601,17 @@ def _rebuild_faces_and_normals(data, voff, vcount, foff, nface, noff, nnorm,
         length = (tnx * tnx + tny * tny + tnz * tnz) ** 0.5
         if length <= 1e-6:
             continue
-        if span_limit is not None:
-            dx = max(p0[0], p1[0], p2[0]) - min(p0[0], p1[0], p2[0])
-            dz = max(p0[2], p1[2], p2[2]) - min(p0[2], p1[2], p2[2])
-            if dx > span_limit or dz > span_limit:
+        dx = max(p0[0], p1[0], p2[0]) - min(p0[0], p1[0], p2[0])
+        dz = max(p0[2], p1[2], p2[2]) - min(p0[2], p1[2], p2[2])
+        if span_limit is not None and (dx > span_limit or dz > span_limit):
+            continue
+        if dx > SLIVER_SPAN_LIMIT or dz > SLIVER_SPAN_LIMIT:
+            e0 = (ux * ux + uy * uy + uz * uz) ** 0.5
+            w1x, w1y, w1z = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]
+            e1 = (w1x * w1x + w1y * w1y + w1z * w1z) ** 0.5
+            e2 = (vx * vx + vy * vy + vz * vz) ** 0.5
+            emax = max(e0, e1, e2)
+            if length < SLIVER_MAX_ALTITUDE * emax:
                 continue
         nx, ny, nz = tnx / length, tny / length, tnz / length
         sg = struct.unpack_from("<I", data, noff + ni * NORMAL_SIZE + 12)[0] if ni < nnorm else 0
@@ -1002,6 +1027,26 @@ def rf1_gmt_face_count(path):
     if not is_rf1_gmt(head):
         return None
     return struct.unpack_from("<I", head, 0x17C)[0]
+
+
+def gmt_bbox_xz(path):
+    """Return ``(xmin, xmax, zmin, zmax)`` from an rF2 v2.52 or rF1 v2.20 GMT header."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(RF2_HEADER_SIZE)
+    except OSError:
+        return None
+    if len(head) >= 0x0E0 and is_rf2_gmt(head):
+        bmin = struct.unpack_from("<3f", head, 0x0C8)
+        bmax = struct.unpack_from("<3f", head, 0x0D4)
+        return (min(bmin[0], bmax[0]), max(bmin[0], bmax[0]),
+                min(bmin[2], bmax[2]), max(bmin[2], bmax[2]))
+    if len(head) >= 0x06C and is_rf1_gmt(head):
+        corners = struct.unpack_from("<24f", head, 0x00C)
+        xs = corners[0::3]
+        zs = corners[2::3]
+        return (min(xs), max(xs), min(zs), max(zs))
+    return None
 
 
 def convert_file(path, mesh_coarsening=0.0, include_faces=True,
