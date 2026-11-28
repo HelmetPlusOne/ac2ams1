@@ -51,12 +51,12 @@ View=mainview
     Color=(145, 185, 230)
     Size=(1024.00, 64.00) Center=(512, 32.00)
     FOV=(77.75, 31.25)
-    ClipPlanes=(0.30, 500.00)
+    ClipPlanes=(0.30, 400.00)
   }}
 }}
 
 GroupMethod=Dynamic
-MaxShadowRange(500.00)
+MaxShadowRange=({max_shadow_range:.2f})
 AmbientColor=({amb}, {amb}, {amb})
 FogMode=LINEAR FogIn=(50.00) FogOut=(5000.00) FogDensity=(0.30) FogColor=(205, 215, 235)
 
@@ -244,32 +244,106 @@ def sun_direction(out_dir):
     return (flat * math.sin(heading), -math.sin(pitch), -flat * math.cos(heading))
 
 
-def shadow_caster(row, cutouts):
-    """How this mesh casts a shadow in AMS, or None.
+DRIVABLE_PREFIXES = ("road", "cem", "conc", "rmbl", "gras", "grvl", "dstg", "dirt")
+COMPACT_SHADOW_MAX_RADIUS = 60.0
+COMPACT_SHADOW_MAX_TRIS = 8000
+FULL_SHADOW_MAX_RADIUS = 150.0
 
-    Nothing did. The scene never named a caster, so roofs left the stand
-    seating in full sun, trees left no shade on the grass and rocks none on
-    themselves: a good part of every "too bright" report, where AC (and CSP,
-    which turns casting on for more) shades them. Studio 397's Loch Drummond
-    marks 385 instances (Static, Solid), or (Static, Texture) for cut-outs so
-    the leaves cast and the cards around them do not.
 
-    AC's own per-mesh flag decides. Left out: what is not drawn, blended
-    surfaces and backdrops (AMS casts the whole card), decals, and flat
-    ground, which official tracks give a separate shadow object if anything
-    and which would only shade itself.
+def is_shadow_receiver(meta, row, mode="compact"):
+    """Return True when this AMS1 instance should receive projected shadows.
+
+    AMS1 (gMotor 2.0) projects every active ShadowCaster texture onto every
+    overlapping ShadowReceiver mesh in a separate pass. Stock AMS1 tracks set
+    ShadowReceiver=True only on road/ground surfaces (~6-23% of instances)
+    rather than on trees, fences, and props, keeping car shadows intact while
+    preventing N_casters * N_receivers pass explosions.
     """
-    if not row.get("render", True) or not row.get("cast_shadows"):
+    if not row.get("render", True) or row.get("timing"):
+        return False
+    if meta is None:
+        return bool(row.get("physical"))
+    if meta.get("decal") or meta.get("backdrop"):
+        return False
+    if meta.get("alpha_test") or meta.get("needs_blend"):
+        return False
+    if meta.get("shader") in ("ksTree", "ksGrass"):
+        return False
+    if mode == "full":
+        return True
+    mat_prefix = str(meta.get("rf2_material", "")).split("_", 1)[0].lower()
+    if row.get("physical") and mat_prefix in DRIVABLE_PREFIXES:
+        return True
+    if meta.get("ground_like") or meta.get("track_surface"):
+        return True
+    return float(meta.get("upward", 0.0)) >= 0.5
+
+
+def shadow_caster(meta, cutouts, mode="compact", radius=0.0, tris=0):
+    """Return ``(kind, map_size)`` for AMS1 ShadowCaster, or None.
+
+    Modes:
+      - ``off``: no track ShadowCaster entries (cars still cast shadows onto
+        ShadowReceiver=True ground/road surfaces).
+      - ``compact`` (default): only compact opaque structures (radius <= 60 m,
+        <= 8000 tris) at 32x32 or 64x64; skips foliage/alpha-tested Texture
+        shadow maps to match stock AMS1 shadow budgets.
+      - ``full``: opaque and alpha-tested cutouts up to 150 m radius at 64x64.
+    """
+    if mode == "off" or meta is None:
         return None
-    if row.get("decal") or row.get("backdrop"):
+    if not meta.get("render", True) or not meta.get("cast_shadows"):
         return None
-    if row.get("needs_blend") and not row.get("alpha_test"):
+    if meta.get("decal") or meta.get("backdrop"):
         return None
-    if float(row.get("upward", 0.0)) >= 0.9:
+    if meta.get("needs_blend") and not meta.get("alpha_test"):
         return None
-    if row.get("alpha_test"):
-        return "Texture" if row["rf2_material"] in cutouts else None
-    return "Solid"
+    if float(meta.get("upward", 0.0)) >= 0.9:
+        return None
+
+    r = float(radius or meta.get("radius", 0.0) or 0.0)
+    t = int(tris or meta.get("tris", 0) or 0)
+
+    if mode == "compact":
+        if meta.get("alpha_test") or meta.get("shader") in ("ksTree", "ksGrass"):
+            return None
+        if r > COMPACT_SHADOW_MAX_RADIUS or t > COMPACT_SHADOW_MAX_TRIS:
+            return None
+        size = 32 if r <= 25.0 else 64
+        return ("Solid", size)
+
+    # mode == "full"
+    if r > FULL_SHADOW_MAX_RADIUS:
+        return None
+    if meta.get("alpha_test"):
+        return ("Texture", 64) if meta.get("rf2_material") in cutouts else None
+    return ("Solid", 64)
+
+
+def ams_lod_range(meta, row):
+    """Return ``(lod_in, lod_out)`` for an AMS1 .scn instance to aid distance culling.
+
+    Preserves AC's explicit LODIn/LODOut when set; otherwise applies stock-like
+    distance culling to grass, foliage cutouts, and small non-ground props
+    while keeping roads, terrain, and backdrops visible to the horizon.
+    """
+    lin = float(row.get("lod_in") or 0.0)
+    lout = float(row.get("lod_out") or 0.0)
+    if lout > 0.0:
+        return lin, lout
+    if meta is None or row.get("physical") or meta.get("backdrop"):
+        return 0.0, 0.0
+    if meta.get("ground_like") or meta.get("track_surface"):
+        return 0.0, 0.0
+    shader = meta.get("shader") or ""
+    r = float(row.get("radius") or meta.get("radius") or 0.0)
+    if shader == "ksGrass":
+        return 0.0, 250.0
+    if (shader == "ksTree" or meta.get("alpha_test")) and 0.0 < r <= 300.0:
+        return 0.0, 800.0
+    if 0.0 < r <= 30.0:
+        return 0.0, 600.0
+    return 0.0, 0.0
 
 
 LOADING_SIZE = (1920, 1080)
@@ -722,6 +796,8 @@ def main():
     ap.add_argument("--strip-unused-gmt-data",
                     action=argparse.BooleanOptionalAction, default=None,
                     help="strip unused collision FaceData/NormalData on CollTarget=False GMTs and dummy UVTangents on flat-normal cutouts (default from ac2ams1.ini / true)")
+    ap.add_argument("--track-shadows", choices=("compact", "off", "full"), default=None,
+                    help="AMS1 track shadow casting mode: compact (default), off, or full (overrides ac2ams1.ini [track] track_shadows)")
     args = ap.parse_args()
 
     import steam_paths
@@ -743,6 +819,10 @@ def main():
         raise SystemExit("--mesh-coarsening: %s" % exc)
     if args.strip_unused_gmt_data is None:
         args.strip_unused_gmt_data = _cfg["strip_unused_gmt_data"]
+    if args.track_shadows is None:
+        args.track_shadows = _cfg["track_shadows"]
+    else:
+        args.track_shadows = steam_paths.validate_track_shadows(args.track_shadows)
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
@@ -769,12 +849,26 @@ def main():
                    else flags.get(row.get("mesh")))
             if cur is not None:
                 row["render"] = cur.get("render", True)
-                row["shadow"] = shadow_caster(cur, cutouts)
                 # AC's switching distances come from here too, for the same
                 # reason: they decide what the scene says, not what the
                 # geometry stage happened to record an hour earlier.
                 row["lod_in"] = cur.get("lod_in", 0.0)
                 row["lod_out"] = cur.get("lod_out", 0.0)
+                row["shadow"] = shadow_caster(
+                    cur, cutouts, mode=args.track_shadows,
+                    radius=row.get("radius", 0.0), tris=row.get("tris", 0),
+                )
+                row["shadow_receiver"] = is_shadow_receiver(cur, row, mode=args.track_shadows)
+                row["_meta"] = cur
+            else:
+                row["shadow"] = None
+                row["shadow_receiver"] = is_shadow_receiver(None, row, mode=args.track_shadows)
+                row["_meta"] = None
+    else:
+        for row in exported:
+            row["shadow"] = None
+            row["shadow_receiver"] = is_shadow_receiver(None, row, mode=args.track_shadows)
+            row["_meta"] = None
 
     stage = os.path.join(out_dir, "ams1", venue)
     if os.path.isdir(stage):
@@ -807,13 +901,17 @@ def main():
 
     skybox = stage_skybox(stage, args.install, venue)
     sx, sy, sz = sun_direction(out_dir)
+    max_shadow_range = 250.0 if args.track_shadows == "full" else 200.0
     lines = [SCN_HEADER.format(venue=venue, layout=layout,
                                mas_files=mas_files,
                                amb=args.ambient, sun=args.sun,
                                sx=sx, sy=sy, sz=sz,
+                               max_shadow_range=max_shadow_range,
                                skybox=skybox)]
     used_instances = {"skyboxi", "clouds", "sky", "xpitin", "xpitout"}
     phys = 0
+    casters = 0
+    receivers = 0
     for row in exported:
         name = instance_identifier(os.path.splitext(row["gmt"])[0], used_instances)
         coll = "True" if row["physical"] else "False"
@@ -843,14 +941,20 @@ def main():
             )
             continue
 
-        lin = float(row.get("lod_in") or 0.0)
-        lout = float(row.get("lod_out") or 0.0)
+        lin, lout = ams_lod_range(row.get("_meta"), row)
         extra = (" LODIn=(%.1f) LODOut=(%.1f)" % (lin, lout)) if lout > 0.0 else ""
-        extra += " ShadowReceiver=True"
-        if row.get("shadow"):
+        if row.get("shadow_receiver"):
+            extra += " ShadowReceiver=True"
+            receivers += 1
+        else:
+            extra += " ShadowReceiver=False"
+        sc = row.get("shadow")
+        if sc:
             # AMS1/rF1 requires 4-argument ShadowCaster with shadow map size
             # (width, height); 2-argument rF2 syntax crashes on shadow pass.
-            extra += " ShadowCaster=(Static, %s, 128, 128)" % row["shadow"]
+            kind, size = sc
+            extra += " ShadowCaster=(Static, %s, %d, %d)" % (kind, size, size)
+            casters += 1
         lines.append("Instance=%s\n{\n  MeshFile=%s CollTarget=%s HATTarget=%s%s\n}\n"
                      % (name, row["gmt"], coll, hat, extra))
     if not args.minimal:
@@ -903,6 +1007,8 @@ def main():
 
     print("staged %s" % stage)
     print("  instances   %d  (%d collidable)" % (len(exported), phys))
+    print("  shadows     mode=%s, %d casters, %d receivers (MaxShadowRange=%.0fm)"
+          % (args.track_shadows, casters, receivers, max_shadow_range))
     print("  gmt files   %d" % n_gmt)
     print("  textures    %d" % n_tex)
     print("  waypoints   %s" % ("yes" if has_aiw else "MISSING"))

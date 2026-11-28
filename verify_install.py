@@ -420,10 +420,11 @@ def main():
         problems.append("%d gmts keep the exporter's 1000 m visible range, e.g. %s"
                         % (len(short_range), short_range[:3]))
 
-    # 8. something casts a shadow. The scene once named no caster at all.
+    # 8. Ground/road shadow receivers exist (for car & track shadows).
     casters = scene.count("ShadowCaster=")
-    if not casters:
-        problems.append("no instance casts a shadow")
+    receivers = scene.count("ShadowReceiver=True")
+    if not receivers:
+        problems.append("no instance receives shadows (ShadowReceiver=True)")
 
     # 9. Instance= names must fit inside AMS1's 32-byte buffer (<= 31 chars +
     #    NUL); longer names overflow into a linked-list pointer and crash on exit.
@@ -451,7 +452,7 @@ def main():
     print("normals:     %d upright meshes checked, %d lit as if facing up"
           % (walls, len(sky_lit)))
     print("ranges:      %d gmts at the 1000 m default" % len(short_range))
-    print("shadows:     %d casters" % casters)
+    print("shadows:     %d casters, %d receivers" % (casters, receivers))
     for line in scene.splitlines():
         if line.startswith(("AmbientColor", "FogMode")) or "Type=Directional" in line:
             print("scene:       %s" % line.strip())

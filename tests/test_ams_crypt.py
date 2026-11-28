@@ -763,6 +763,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["mesh_coarsening_source"], "default")
             self.assertTrue(cfg["strip_unused_gmt_data"])
             self.assertEqual(cfg["strip_unused_gmt_data_source"], "default")
+            self.assertEqual(cfg["track_shadows"], "compact")
+            self.assertEqual(cfg["track_shadows_source"], "default")
             self.assertNotIn("road_smooth", cfg)
 
             # Partial ini marks only specified keys as read from ini.
@@ -774,6 +776,7 @@ class StandaloneCliTests(unittest.TestCase):
                     "road_smoothness=0\n"
                     "mesh_coarsening=0.6\n"
                     "strip_unused_gmt_data=false\n"
+                    "track_shadows=off\n"
                 )
             cfg = steam_paths.load_config(root)
             self.assertTrue(cfg["exists"])
@@ -788,6 +791,8 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertEqual(cfg["mesh_coarsening_source"], "ini")
             self.assertFalse(cfg["strip_unused_gmt_data"])
             self.assertEqual(cfg["strip_unused_gmt_data_source"], "ini")
+            self.assertEqual(cfg["track_shadows"], "off")
+            self.assertEqual(cfg["track_shadows_source"], "ini")
 
             # Legacy alias strip_non_collidable_faces still works if present.
             with open(ini, "w", encoding="utf-8") as f:
@@ -851,6 +856,13 @@ class StandaloneCliTests(unittest.TestCase):
             for bad in ("maybe", "2", ""):
                 with open(ini, "w", encoding="utf-8") as f:
                     f.write("[track]\nstrip_unused_gmt_data=%s\n" % bad)
+                with self.assertRaises(ValueError):
+                    steam_paths.load_config(root)
+
+            # Invalid track_shadows mode raises ValueError.
+            for bad in ("ultra", "on", ""):
+                with open(ini, "w", encoding="utf-8") as f:
+                    f.write("[track]\ntrack_shadows=%s\n" % bad)
                 with self.assertRaises(ValueError):
                     steam_paths.load_config(root)
 
@@ -1166,7 +1178,7 @@ class StandaloneCliTests(unittest.TestCase):
                           "  Response=VEHICLE,TIMING\n}", scene)
             self.assertIn("Instance=1WALL_001\n{\n  Render=False Change=False\n"
                           "  MeshFile=1WALL_001.gmt CollTarget=True HATTarget=True\n}", scene)
-            self.assertIn("Instance=vis\n{\n  MeshFile=vis.gmt CollTarget=False HATTarget=False ShadowReceiver=True\n}", scene)
+            self.assertIn("Instance=vis\n{\n  MeshFile=vis.gmt CollTarget=False HATTarget=False ShadowReceiver=False\n}", scene)
 
     def test_fix_textures_reencodes_malformed_dds_byte_size(self):
         # 4x4 DXT5 with 3 mips should be 128 + 16*3 = 176 bytes; Road Atlanta's
@@ -1620,6 +1632,52 @@ class StandaloneCliTests(unittest.TestCase):
             dec_mip = bake_layers.to_rgba(os.path.join(tex_dir, out_name), tmp_dir, 16, 16)
             self.assertIsNotNone(dec_mip)
             self.assertEqual(float(dec_mip[:, :, 3].max()), 0.0)
+
+    def test_ams_shadow_modes_receivers_and_lod_culling(self):
+        road_meta = {
+            "render": True, "cast_shadows": False, "decal": False, "backdrop": False,
+            "alpha_test": False, "needs_blend": False, "shader": "ksPerPixel",
+            "rf2_material": "road_asphalt", "ground_like": True, "upward": 1.0,
+        }
+        tree_meta = {
+            "render": True, "cast_shadows": True, "decal": False, "backdrop": False,
+            "alpha_test": True, "needs_blend": False, "shader": "ksTree",
+            "rf2_material": "tree_01", "ground_like": False, "upward": 0.0,
+        }
+        hut_meta = {
+            "render": True, "cast_shadows": True, "decal": False, "backdrop": False,
+            "alpha_test": False, "needs_blend": False, "shader": "ksPerPixel",
+            "rf2_material": "hut", "ground_like": False, "upward": 0.2,
+        }
+        cutouts = {"tree_01": 191}
+
+        # Road receives shadows in all modes; trees/huts do not in compact/off.
+        self.assertTrue(finalize_track.is_shadow_receiver(road_meta, {"render": True, "physical": True}, "compact"))
+        self.assertTrue(finalize_track.is_shadow_receiver(road_meta, {"render": True, "physical": True}, "off"))
+        self.assertFalse(finalize_track.is_shadow_receiver(tree_meta, {"render": True, "physical": False}, "compact"))
+        self.assertFalse(finalize_track.is_shadow_receiver(hut_meta, {"render": True, "physical": False}, "compact"))
+        self.assertTrue(finalize_track.is_shadow_receiver(hut_meta, {"render": True, "physical": False}, "full"))
+
+        # Compact casts only on compact opaque structures (<= 60 m, <= 8000 tris), never foliage.
+        self.assertIsNone(finalize_track.shadow_caster(tree_meta, cutouts, mode="compact", radius=15.0, tris=200))
+        self.assertEqual(finalize_track.shadow_caster(hut_meta, cutouts, mode="compact", radius=15.0, tris=200), ("Solid", 32))
+        self.assertEqual(finalize_track.shadow_caster(hut_meta, cutouts, mode="compact", radius=40.0, tris=200), ("Solid", 64))
+        self.assertIsNone(finalize_track.shadow_caster(hut_meta, cutouts, mode="compact", radius=80.0, tris=200))
+        self.assertIsNone(finalize_track.shadow_caster(hut_meta, cutouts, mode="compact", radius=15.0, tris=12000))
+
+        # Off disables all track casters.
+        self.assertIsNone(finalize_track.shadow_caster(hut_meta, cutouts, mode="off", radius=15.0, tris=200))
+
+        # Full enables Texture foliage casters up to 150 m at 64x64.
+        self.assertEqual(finalize_track.shadow_caster(tree_meta, cutouts, mode="full", radius=40.0, tris=500), ("Texture", 64))
+        self.assertIsNone(finalize_track.shadow_caster(tree_meta, cutouts, mode="full", radius=200.0, tris=500))
+
+        # Distance LOD culling: grass=250m, tree=800m, small prop=600m, road=0 (full range).
+        self.assertEqual(finalize_track.ams_lod_range(road_meta, {"physical": True, "radius": 20.0}), (0.0, 0.0))
+        self.assertEqual(finalize_track.ams_lod_range(tree_meta, {"physical": False, "radius": 100.0}), (0.0, 800.0))
+        self.assertEqual(finalize_track.ams_lod_range(hut_meta, {"physical": False, "radius": 15.0}), (0.0, 600.0))
+        grass_meta = dict(tree_meta, shader="ksGrass")
+        self.assertEqual(finalize_track.ams_lod_range(grass_meta, {"physical": False, "radius": 120.0}), (0.0, 250.0))
 
 
 if __name__ == "__main__":

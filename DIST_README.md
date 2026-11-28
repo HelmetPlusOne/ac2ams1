@@ -1,4 +1,4 @@
-# AC to Automobilista 1 — Standalone Converter
+# Assetto Corsa to Automobilista 1 — Standalone Track Converter
 
 Standalone Windows distribution for converting Assetto Corsa (AC) tracks into Automobilista 1 (AMS1) locations. No pre-installed Python, Blender, Assetto Corsa, Automobilista 1, or rFactor 2 is required. Drag and drop AC track folder onto the `ac2ams1.exe`.
 
@@ -9,6 +9,7 @@ Converted tracks are automatically installed into the `out\` folder next to `ac2
 ### TBD
 
 - **Preserve all-zero alpha in `bake_layers.py` (fixes solid pink/magenta transparent marker overlays)**: Switched `bake_layers.py` (`write_dds`, `write_base`, `even_mip_detail`) from writing intermediate 32-bit `.tga` files to uncompressed 32-bit BGRA8 `.dds` (`write_uncompressed_dds`) before invoking `texconv.exe`, working around DirectXTex's legacy TGA loader heuristic that rewrote all-zero alpha channels to `255` (100% opaque) and turned invisible alpha-tested marker/helper meshes into solid magenta geometry.
+- **AMS1 shadow budgets, spatial tile splitting, and distance culling (`track_shadows`)**: Added `[track] track_shadows` (`compact` default / `off` / `full`) in `ac2ams1.ini` (and `--track-shadows` CLI override) to match stock AMS1 projected-shadow budgets (`ShadowReceiver=True` on road/ground only so cars cast shadows onto the track, `ShadowCaster=(Static, Solid, 32/64)` only on compact opaque structures `<= 60 m` / `<= 8000` tris, no foliage `Texture` shadow maps, `MaxShadowRange=(200.0)`); added 250 m horizontal spatial tile splitting for wide AC meshes in `blender_stage.py`, stock-style `LODOut` distance culling for grass (`250 m`), foliage cutouts (`800 m`), and small non-ground props (`600 m`), and a tighter rearview clip plane (`400 m`).
 
 ### 23 Nov 2026
 
@@ -71,6 +72,7 @@ Common options:
 - `--road-smoothness <0..1>` — C2 triweight quadratic MLS Y-smoothing strength for physical road meshes (overrides `ac2ams1.ini`; default `0.5`). Mapped uniformly to effective `road_smooth_sigma` in `[0m, 8m]` (`0.0` disables smoothing, `0.5 -> 4m` default, `1.0 -> 8m` max).
 - `--mesh-coarsening <0..1>` — deterministic boundary-preserving Blender QEM mesh coarsening strength (overrides `ac2ams1.ini`; default `0.0` disabled, `1.0` strongest safe reduction keeping major track geometry intact).
 - `--strip-unused-gmt-data` / `--no-strip-unused-gmt-data` — strip unused collision `FaceData`/`NormalData` tables from `CollTarget=False` visual GMTs and drop dummy `UVTangents` on flat-normal/flat-spec cutouts (`L2BUMPSPECMAPT0` → `L2DIFFUSET0`) without altering geometry or road meshes (overrides `ac2ams1.ini`; default enabled).
+- `--track-shadows <compact|off|full>` — AMS1 track shadow casting mode (overrides `ac2ams1.ini`; default `compact`: `ShadowReceiver=True` on road/ground only, `ShadowCaster=(Static, Solid, 32/64)` only on compact structures `<= 60 m` / `<= 8000` tris, `MaxShadowRange=(200.0)`; `off` disables track casters while keeping car shadows on the road; `full` enables opaque + foliage casters up to `150 m`).
 - `--jobs <n>` — number of parallel Blender and texture conversion workers.
 - `--skip-geometry` — reuse previously exported GMT meshes in `work\<track>\gmt\`.
 - `--install "<dir>"` — override the automatic install destination (defaults to `out\` next to `ac2ams1.exe`).
@@ -111,7 +113,7 @@ All tool and data paths are resolved relative to `ac2ams1.exe`:
 | Path | Contents / Purpose |
 | --- | --- |
 | `ac2ams1.exe` | Single executable bundling **Python 3.10**, **NumPy**, and the AC-to-AMS1 converter scripts (`build_track`, `convert_multiple_tracks`, `check_setup`, `verify_install`, and all conversion stages). |
-| `ac2ams1.ini` | Configuration file read from the same folder as `ac2ams1.exe` (`[track]` `texture_scale`, `texture_scale_min_size`, `road_smoothness`, `mesh_coarsening`, `strip_unused_gmt_data`). |
+| `ac2ams1.ini` | Configuration file read from the same folder as `ac2ams1.exe` (`[track]` `texture_scale`, `texture_scale_min_size`, `road_smoothness`, `mesh_coarsening`, `strip_unused_gmt_data`, `track_shadows`). |
 | `tools\blender\` | Portable **Blender 3.6 LTS** (`blender.exe`) with the **rFactor 2 GMT Exporter add-on (`io_rf2_gmt_release`)** pre-installed under `3.6\scripts\addons\io_rf2_gmt_release\`. |
 | `tools\blender_scripts\` | Plain Python scripts executed inside Blender's own interpreter (`blender_stage.py`, `kn5.py`, `backdrop.py`, `mesh_coarsen.py`). |
 | `tools\texconv\texconv.exe` | **Microsoft DirectXTex `texconv.exe`** for DX9 power-of-two DDS conversion, mipmap generation, multilayer material baking, and loading screen / minimap composition. |
