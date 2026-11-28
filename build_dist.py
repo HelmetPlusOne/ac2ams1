@@ -70,13 +70,90 @@ WORK_README = (
 )
 
 
-def find_blender_dir(explicit):
+def _program_files_dirs():
+    out = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        val = os.environ.get(var)
+        if val and os.path.isdir(val):
+            out.append(val)
+    return out
+
+
+def find_blender_dir(explicit, fallback_dist=None):
+    candidates = []
     if explicit:
         path = os.path.abspath(explicit)
         if os.path.isfile(path):
             path = os.path.dirname(path)
         return path
-    return os.path.dirname(os.path.abspath(steam_paths.BLENDER))
+    env_b = os.environ.get("AC2AMS_BLENDER")
+    if env_b:
+        path = os.path.abspath(env_b)
+        return os.path.dirname(path) if os.path.isfile(path) else path
+    which_b = shutil.which("blender")
+    if which_b:
+        candidates.append(os.path.dirname(os.path.abspath(which_b)))
+    for pf in _program_files_dirs():
+        candidates.append(os.path.join(pf, "Blender Foundation", "Blender 3.6"))
+    if fallback_dist:
+        candidates.append(os.path.join(fallback_dist, "tools", "blender"))
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "blender.exe")):
+            return path
+    return candidates[0] if candidates else ""
+
+
+def find_texconv(explicit, fallback_dist=None):
+    if explicit:
+        return os.path.abspath(explicit)
+    env_t = os.environ.get("AC2AMS_TEXCONV")
+    if env_t:
+        return os.path.abspath(env_t)
+    which_t = shutil.which("texconv")
+    if which_t:
+        return os.path.abspath(which_t)
+    rf2_dir = os.environ.get("AC2AMS_RF2_DIR") or steam_paths.game_dir("rFactor 2")
+    if rf2_dir:
+        cand = os.path.join(rf2_dir, "Support", "Tools", "MapConverter", "texconv.exe")
+        if os.path.isfile(cand):
+            return cand
+    if fallback_dist:
+        cand = os.path.join(fallback_dist, "tools", "texconv", "texconv.exe")
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def find_ac_dir(explicit, fallback_dist=None):
+    if explicit:
+        return os.path.abspath(explicit)
+    env_ac = os.environ.get("AC2AMS_AC_DIR")
+    if env_ac:
+        return os.path.abspath(env_ac)
+    cand = steam_paths.game_dir("assettocorsa")
+    if cand and os.path.isfile(os.path.join(cand, "system", "data", "surfaces.ini")):
+        return cand
+    if fallback_dist:
+        fb = os.path.join(fallback_dist, "data", "ac")
+        if os.path.isfile(os.path.join(fb, "system", "data", "surfaces.ini")):
+            return fb
+    return cand
+
+
+def find_ams_dir(explicit, fallback_dist=None):
+    if explicit:
+        return os.path.abspath(explicit)
+    env_ams = os.environ.get("AC2AMS_GAME_DIR")
+    if env_ams:
+        return os.path.abspath(env_ams)
+    cand = steam_paths.game_dir("Automobilista")
+    if cand and os.path.isfile(os.path.join(cand, "GameData", "Locations", "terrain.tdf")):
+        return cand
+    if fallback_dist:
+        fb = os.path.join(fallback_dist, "data", "ams1")
+        if os.path.isfile(os.path.join(fb, "GameData", "Locations", "terrain.tdf")):
+            return fb
+    return cand
 
 
 def find_addon_dir(blender_dir, explicit):
@@ -100,14 +177,25 @@ def find_addon_dir(blender_dir, explicit):
     )
 
 
-def find_rfactortools_dir(explicit):
+def find_rfactortools_dir(explicit, fallback_dist=None):
     if explicit:
         path = os.path.abspath(explicit)
         if os.path.isfile(path):
             path = os.path.dirname(path)
         return path
-    enc = os.path.abspath(steam_paths.ENCRYPTOR)
-    return os.path.dirname(enc)
+    env_enc = os.environ.get("AC2AMS_ENCRYPTOR")
+    if env_enc:
+        path = os.path.abspath(env_enc)
+        return os.path.dirname(path) if os.path.isfile(path) else path
+    for name in ("rfactorcrypt", "rft-rfactorcrypt"):
+        found = shutil.which(name)
+        if found:
+            return os.path.dirname(os.path.abspath(found))
+    if fallback_dist:
+        cand = os.path.join(fallback_dist, "tools", "rfactortools")
+        if os.path.isfile(os.path.join(cand, "rfactorcrypt.exe")):
+            return cand
+    return ""
 
 
 def find_sky_assets(locations_dir):
@@ -215,27 +303,41 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     dist_dir = os.path.abspath(args.dist)
-    blender_src = find_blender_dir(args.blender)
-    addon_src = find_addon_dir(blender_src, args.addon)
-    texconv_src = os.path.abspath(args.texconv or steam_paths.TEXCONV)
-    rfactortools_src = find_rfactortools_dir(args.rfactortools)
-    ac_dir = os.path.abspath(args.ac or steam_paths.AC_DIR)
-    ams_dir = os.path.abspath(args.ams or steam_paths.AMS_DIR)
 
-    surfaces_src = os.path.join(ac_dir, "system", "data", "surfaces.ini")
-    locations_src = os.path.join(ams_dir, "GameData", "Locations")
-    terrain_src = os.path.join(locations_src, "terrain.tdf")
+    # Reuse an existing ./dist bundle as fallback source only when building
+    # into a different target directory.
+    default_dist = os.path.abspath(os.path.join(HERE, "dist"))
+    fallback_dist = (
+        default_dist
+        if os.path.isdir(default_dist)
+        and os.path.normcase(dist_dir) != os.path.normcase(default_dist)
+        else None
+    )
 
-    for label, path, check in (
-        ("Blender", os.path.join(blender_src, "blender.exe"), os.path.isfile),
-        ("Blender addon", addon_src, os.path.isdir),
-        ("texconv.exe", texconv_src, os.path.isfile),
-        ("rfactorcrypt.exe", os.path.join(rfactortools_src, "rfactorcrypt.exe"), os.path.isfile),
-        ("AC surfaces.ini", surfaces_src, os.path.isfile),
-        ("AMS1 terrain.tdf", terrain_src, os.path.isfile),
+    blender_src = find_blender_dir(args.blender, fallback_dist=fallback_dist)
+    addon_src = find_addon_dir(blender_src, args.addon) if blender_src else ""
+    texconv_src = find_texconv(args.texconv, fallback_dist=fallback_dist)
+    rfactortools_src = find_rfactortools_dir(args.rfactortools, fallback_dist=fallback_dist)
+    ac_dir = find_ac_dir(args.ac, fallback_dist=fallback_dist)
+    ams_dir = find_ams_dir(args.ams, fallback_dist=fallback_dist)
+
+    surfaces_src = os.path.join(ac_dir, "system", "data", "surfaces.ini") if ac_dir else ""
+    locations_src = os.path.join(ams_dir, "GameData", "Locations") if ams_dir else ""
+    terrain_src = os.path.join(locations_src, "terrain.tdf") if locations_src else ""
+
+    for label, path, check, hint in (
+        ("Blender", os.path.join(blender_src, "blender.exe") if blender_src else "", os.path.isfile, "--blender"),
+        ("Blender addon", addon_src, os.path.isdir, "--addon"),
+        ("texconv.exe", texconv_src, os.path.isfile, "--texconv"),
+        ("rfactorcrypt.exe", os.path.join(rfactortools_src, "rfactorcrypt.exe") if rfactortools_src else "", os.path.isfile, "--rfactortools"),
+        ("AC surfaces.ini", surfaces_src, os.path.isfile, "--ac"),
+        ("AMS1 terrain.tdf", terrain_src, os.path.isfile, "--ams"),
     ):
-        if not check(path):
-            raise SystemExit("Required source missing (%s): %s" % (label, path))
+        if not path or not check(path):
+            raise SystemExit(
+                "Required source missing (%s): %s (pass %s)"
+                % (label, path or "<not found>", hint)
+            )
 
     sky_sources = find_sky_assets(locations_src)
 

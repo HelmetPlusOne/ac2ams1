@@ -26,16 +26,6 @@ HERE = (
     if getattr(sys, "frozen", False)
     else os.path.dirname(os.path.abspath(__file__))
 )
-BLENDER = (
-    os.path.join(HERE, "tools", "blender", "blender.exe")
-    if os.path.isfile(os.path.join(HERE, "tools", "blender", "blender.exe"))
-    else r"D:\Apps\Blender\blender.exe"
-)
-ENCRYPTOR = (
-    os.path.join(HERE, "tools", "rfactortools", "rfactorcrypt.exe")
-    if os.path.isfile(os.path.join(HERE, "tools", "rfactortools", "rfactorcrypt.exe"))
-    else r"D:\Mods\Automobilista\Tools\rfactortools-0.3.1.win32\rfactorcrypt.exe"
-)
 
 
 def stage_cmd(script_name, *stage_args):
@@ -285,10 +275,9 @@ def main():
     ap.add_argument("--ac", default=None,
                     help="the assettocorsa folder, if Steam does not list it")
     ap.add_argument("--texconv", default=None,
-                    help="path to texconv.exe (defaults to the copy in rFactor 2)")
+                    help="path to texconv.exe (defaults to bundled dist texconv.exe)")
     ap.add_argument("--encryptor", default=None,
-                    help="path to rfactorcrypt.exe when rfactortools is not installed "
-                         "(defaults to AC2AMS_ENCRYPTOR or %s)" % ENCRYPTOR)
+                    help="path to rfactorcrypt.exe (defaults to bundled dist rfactorcrypt.exe)")
     args = ap.parse_args()
     # Every step is a process of its own that finds the games through
     # steam_paths, which reads these, so they are set before anything imports it.
@@ -340,10 +329,13 @@ def main():
 
     if not args.blender:
         args.blender = steam_paths.BLENDER
-    encryptor = args.encryptor or os.environ.get("AC2AMS_ENCRYPTOR")
-    if not encryptor and steam_paths.ENCRYPTOR and os.path.isfile(steam_paths.ENCRYPTOR):
+    if steam_paths.IS_STANDALONE:
         encryptor = steam_paths.ENCRYPTOR
-    if encryptor:
+    else:
+        encryptor = args.encryptor or os.environ.get("AC2AMS_ENCRYPTOR")
+        if not encryptor and steam_paths.ENCRYPTOR and os.path.isfile(steam_paths.ENCRYPTOR):
+            encryptor = steam_paths.ENCRYPTOR
+    if encryptor and os.path.isfile(encryptor):
         os.environ["AC2AMS_ENCRYPTOR"] = os.path.abspath(encryptor)
 
     if args.install is None and steam_paths.IS_STANDALONE:

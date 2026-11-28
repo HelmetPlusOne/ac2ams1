@@ -1,8 +1,7 @@
-"""Where Assetto Corsa, Automobilista 1, and bundled/external tools live.
+"""Where Assetto Corsa, Automobilista 1, and bundled tools live.
 
-In a standalone ``dist`` layout (next to ``ac2ams1.exe``), all tools and template
-game data resolve relative to the executable directory so the converter runs on
-a clean Windows machine with no AC, AMS1, rF2, Python, or Blender installed:
+All runtime tools and template game data resolve strictly from the ``dist``
+bundle layout — never from hardcoded machine-local paths:
 
   <dist>/
       ac2ams1.exe
@@ -16,9 +15,11 @@ a clean Windows machine with no AC, AMS1, rF2, Python, or Blender installed:
       work/
       out/
 
-Outside a standalone bundle, Steam libraries and registry paths are used, and
-environment variables (AC2AMS_GAME_DIR, AC2AMS_AC_DIR, AC2AMS_TEXCONV,
-AC2AMS_BLENDER, AC2AMS_ENCRYPTOR) can override any path.
+- Running from ``dist`` (frozen ``ac2ams1.exe`` or directly inside a ``dist``
+  folder): always uses dist-local paths next to the executable.
+- Running from Python directly in the source tree: requires ``build_dist.py``
+  to be run first and loads all tools and template data from
+  ``<script_path>/dist/``.
 """
 import configparser
 import math
@@ -26,9 +27,6 @@ import os
 import re
 import sys
 
-STEAM_DEFAULT = r"C:\Program Files (x86)\Steam"
-DEFAULT_BLENDER = r"D:\Apps\Blender\blender.exe"
-DEFAULT_ENCRYPTOR = r"D:\Mods\Automobilista\Tools\rfactortools-0.3.1.win32\rfactorcrypt.exe"
 INI_NAME = "ac2ams1.ini"
 DEFAULT_TEXTURE_SCALE = 0.5
 DEFAULT_TEXTURE_SCALE_MIN_SIZE = 1024
@@ -94,12 +92,18 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _steam_default():
+    pf = os.environ.get("ProgramFiles(x86)") or os.environ.get("ProgramFiles") or ""
+    return os.path.join(pf, "Steam") if pf else ""
+
+
 def steam_root():
-    """Steam's own folder: from the registry, else the default install path."""
+    """Steam's own folder: from the Windows registry, else ProgramFiles\\Steam."""
+    default = _steam_default()
     try:
         import winreg
     except ImportError:
-        return STEAM_DEFAULT
+        return default
     keys = (
         (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
@@ -114,15 +118,18 @@ def steam_root():
         if path and os.path.isdir(path):
             # Steam stores it lower case; realpath gives the folder's own case.
             return os.path.realpath(path)
-    return STEAM_DEFAULT
+    return default
 
 
 def libraries():
     """Every Steam library folder, Steam's own first."""
     root = steam_root()
-    out = [root]
-    if os.path.normcase(STEAM_DEFAULT) != os.path.normcase(root):
-        out.append(STEAM_DEFAULT)
+    out = [root] if root else []
+    default = _steam_default()
+    if default and os.path.normcase(default) not in (os.path.normcase(p) for p in out):
+        out.append(default)
+    if not root:
+        return out
     vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
     try:
         with open(vdf, encoding="utf-8", errors="replace") as f:
@@ -137,65 +144,127 @@ def libraries():
 
 
 def game_dir(folder):
-    """steamapps/common/<folder> in whichever library has it, else Steam's own."""
+    """steamapps/common/<folder> in whichever Steam library has it, else empty."""
     for lib in libraries():
         p = os.path.join(lib, "steamapps", "common", folder)
         if os.path.isdir(p):
             return p
-    return os.path.join(steam_root(), "steamapps", "common", folder)
+    root = steam_root()
+    return os.path.join(root, "steamapps", "common", folder) if root else ""
 
 
-APP_DIR = app_dir()
-BUNDLED_BLENDER = os.path.join(APP_DIR, "tools", "blender", "blender.exe")
-BUNDLED_BLENDER_STAGE = os.path.join(APP_DIR, "tools", "blender_scripts", "blender_stage.py")
-BUNDLED_TEXCONV = os.path.join(APP_DIR, "tools", "texconv", "texconv.exe")
-BUNDLED_ENCRYPTOR = os.path.join(APP_DIR, "tools", "rfactortools", "rfactorcrypt.exe")
-BUNDLED_AC_DIR = os.path.join(APP_DIR, "data", "ac")
-BUNDLED_AMS_DIR = os.path.join(APP_DIR, "data", "ams1")
+def _has_dist_layout(root):
+    """Return True when ``root`` itself is a standalone dist directory."""
+    return (
+        os.path.isdir(os.path.join(root, "tools"))
+        and os.path.isdir(os.path.join(root, "data"))
+    )
 
-IS_STANDALONE = bool(
-    getattr(sys, "frozen", False)
-    or (os.path.isfile(BUNDLED_BLENDER) and os.path.isdir(os.path.join(APP_DIR, "data")))
-)
 
-_bundled_ams_ok = os.path.isfile(
-    os.path.join(BUNDLED_AMS_DIR, "GameData", "Locations", "terrain.tdf")
-)
-_bundled_ac_ok = os.path.isfile(
-    os.path.join(BUNDLED_AC_DIR, "system", "data", "surfaces.ini")
-)
+def dist_ready(tools_root=None):
+    """Return True when the dist tools/ and data/ directories exist."""
+    root = TOOLS_ROOT if tools_root is None else tools_root
+    return _has_dist_layout(root)
 
-AMS_DIR = (
-    os.environ.get("AC2AMS_GAME_DIR")
-    or (BUNDLED_AMS_DIR if _bundled_ams_ok else game_dir("Automobilista"))
-)
-AC_DIR = (
-    os.environ.get("AC2AMS_AC_DIR")
-    or (BUNDLED_AC_DIR if _bundled_ac_ok else game_dir("assettocorsa"))
-)
-RF2_DIR = os.environ.get("AC2AMS_RF2_DIR") or game_dir("rFactor 2")
-TEXCONV = (
-    os.environ.get("AC2AMS_TEXCONV")
-    or (BUNDLED_TEXCONV if os.path.isfile(BUNDLED_TEXCONV)
-        else os.path.join(RF2_DIR, "Support", "Tools", "MapConverter", "texconv.exe"))
-)
-BLENDER = (
-    os.environ.get("AC2AMS_BLENDER")
-    or (BUNDLED_BLENDER if os.path.isfile(BUNDLED_BLENDER) else DEFAULT_BLENDER)
-)
-BLENDER_STAGE = (
-    BUNDLED_BLENDER_STAGE
-    if os.path.isfile(BUNDLED_BLENDER_STAGE)
-    else os.path.join(APP_DIR, "blender_stage.py")
-)
-ENCRYPTOR = (
-    os.environ.get("AC2AMS_ENCRYPTOR")
-    or (BUNDLED_ENCRYPTOR if os.path.isfile(BUNDLED_ENCRYPTOR) else DEFAULT_ENCRYPTOR)
-)
 
-LOCATIONS = os.path.join(AMS_DIR, "GameData", "Locations")
-INSTALL_LOCATIONS = os.path.join(APP_DIR, "out") if IS_STANDALONE else LOCATIONS
-WORK_ROOT = os.path.join(APP_DIR, "work") if IS_STANDALONE else os.path.join(APP_DIR, "out")
+def resolve_paths(app_root=None, frozen=None, env=None):
+    """Resolve all tool, data, work, and install paths.
+
+    - Running from ``dist`` (frozen EXE or directly inside a ``dist`` folder):
+      always uses dist-local paths under ``app_root``.
+    - Running from Python directly: requires ``build_dist.py`` to be run first
+      and resolves all tools and template data from ``<app_root>/dist/``
+      (honoring explicit ``AC2AMS_*`` CLI overrides when set).
+    """
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else bool(frozen)
+    root = os.path.abspath(app_root) if app_root is not None else app_dir()
+    environ = os.environ if env is None else env
+
+    is_standalone = bool(is_frozen or _has_dist_layout(root))
+    dist_dir = root if is_standalone else os.path.join(root, "dist")
+    tools_root = dist_dir
+
+    bundled_blender = os.path.join(tools_root, "tools", "blender", "blender.exe")
+    bundled_blender_stage = os.path.join(tools_root, "tools", "blender_scripts", "blender_stage.py")
+    bundled_texconv = os.path.join(tools_root, "tools", "texconv", "texconv.exe")
+    bundled_encryptor = os.path.join(tools_root, "tools", "rfactortools", "rfactorcrypt.exe")
+    bundled_ac_dir = os.path.join(tools_root, "data", "ac")
+    bundled_ams_dir = os.path.join(tools_root, "data", "ams1")
+
+    if is_standalone:
+        # Running from dist: always use dist-local tool and data paths.
+        ams_dir = bundled_ams_dir
+        ac_dir = bundled_ac_dir
+        texconv = bundled_texconv
+        blender = bundled_blender
+        blender_stage = bundled_blender_stage
+        encryptor = bundled_encryptor
+    else:
+        # Running from Python directly: get all tools from <script_path>/dist/
+        # (with explicit CLI overrides passed via AC2AMS_* env vars).
+        ams_dir = environ.get("AC2AMS_GAME_DIR") or bundled_ams_dir
+        ac_dir = environ.get("AC2AMS_AC_DIR") or bundled_ac_dir
+        texconv = environ.get("AC2AMS_TEXCONV") or bundled_texconv
+        blender = environ.get("AC2AMS_BLENDER") or bundled_blender
+        encryptor = environ.get("AC2AMS_ENCRYPTOR") or bundled_encryptor
+        local_stage = os.path.join(root, "blender_stage.py")
+        blender_stage = local_stage if os.path.isfile(local_stage) else bundled_blender_stage
+
+    locations = os.path.join(ams_dir, "GameData", "Locations")
+    if is_standalone:
+        install_locations = os.path.join(root, "out")
+        work_root = os.path.join(root, "work")
+    else:
+        work_root = os.path.join(root, "out")
+        install_locations = (
+            locations
+            if os.path.normcase(ams_dir) != os.path.normcase(bundled_ams_dir)
+            else os.path.join(dist_dir, "out")
+        )
+
+    return {
+        "APP_DIR": root,
+        "DIST_DIR": dist_dir,
+        "TOOLS_ROOT": tools_root,
+        "IS_STANDALONE": is_standalone,
+        "BUNDLED_BLENDER": bundled_blender,
+        "BUNDLED_BLENDER_STAGE": bundled_blender_stage,
+        "BUNDLED_TEXCONV": bundled_texconv,
+        "BUNDLED_ENCRYPTOR": bundled_encryptor,
+        "BUNDLED_AC_DIR": bundled_ac_dir,
+        "BUNDLED_AMS_DIR": bundled_ams_dir,
+        "AMS_DIR": ams_dir,
+        "AC_DIR": ac_dir,
+        "TEXCONV": texconv,
+        "BLENDER": blender,
+        "BLENDER_STAGE": blender_stage,
+        "ENCRYPTOR": encryptor,
+        "LOCATIONS": locations,
+        "INSTALL_LOCATIONS": install_locations,
+        "WORK_ROOT": work_root,
+    }
+
+
+_RESOLVED = resolve_paths()
+APP_DIR = _RESOLVED["APP_DIR"]
+DIST_DIR = _RESOLVED["DIST_DIR"]
+TOOLS_ROOT = _RESOLVED["TOOLS_ROOT"]
+IS_STANDALONE = _RESOLVED["IS_STANDALONE"]
+BUNDLED_BLENDER = _RESOLVED["BUNDLED_BLENDER"]
+BUNDLED_BLENDER_STAGE = _RESOLVED["BUNDLED_BLENDER_STAGE"]
+BUNDLED_TEXCONV = _RESOLVED["BUNDLED_TEXCONV"]
+BUNDLED_ENCRYPTOR = _RESOLVED["BUNDLED_ENCRYPTOR"]
+BUNDLED_AC_DIR = _RESOLVED["BUNDLED_AC_DIR"]
+BUNDLED_AMS_DIR = _RESOLVED["BUNDLED_AMS_DIR"]
+AMS_DIR = _RESOLVED["AMS_DIR"]
+AC_DIR = _RESOLVED["AC_DIR"]
+TEXCONV = _RESOLVED["TEXCONV"]
+BLENDER = _RESOLVED["BLENDER"]
+BLENDER_STAGE = _RESOLVED["BLENDER_STAGE"]
+ENCRYPTOR = _RESOLVED["ENCRYPTOR"]
+LOCATIONS = _RESOLVED["LOCATIONS"]
+INSTALL_LOCATIONS = _RESOLVED["INSTALL_LOCATIONS"]
+WORK_ROOT = _RESOLVED["WORK_ROOT"]
 
 
 def load_config(base_dir=None):
