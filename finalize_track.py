@@ -28,10 +28,10 @@ SCN_HEADER = """CUBEASF
 SearchPath=.
 SearchPath=ReizaCommon
 SearchPath=ReizaCommon\\bak
-SearchPath={venue}
-SearchPath={venue}\\{layout}
-SearchPath={venue}\\gmt
-SearchPath={venue}\\maps
+SearchPath={venue_dir}
+SearchPath={venue_dir}\\{layout}
+SearchPath={venue_dir}\\gmt
+SearchPath={venue_dir}\\maps
 
 {mas_files}
 MASFile=CloudsDefault.MAS
@@ -80,7 +80,7 @@ GDB = """{layout}
   Location = converted from Assetto Corsa
   Length = {km:.3f} KM / {mi:.2f} Miles
   TrackType = Permanent Road Course
-  TerrainDataFile = ..\{venue}.tdf
+  TerrainDataFile = ..\{venue_dir}.tdf
   HeadlightsRequired = false
   FormationAndStart = 0
   GarageDepth = 3.5
@@ -130,7 +130,7 @@ GDB = """{layout}
   NightFogIn = (0)
   NightFogOut = (750)
 
-  SettingsFolder = {venue}
+  SettingsFolder = {venue_dir}
 }}
 """
 
@@ -139,10 +139,23 @@ GDB = """{layout}
 # direction we used before when a track says nothing.
 FALLBACK_SUN = (0.25, -0.95, 0.18)
 MAX_LAYOUT_ID_LENGTH = 16
+# Cap staged/installed Locations/<dir> folder names at 32 chars so relative
+# gMotor 2.0 track, loading-screen, and terrain paths stay within fixed buffers.
+MAX_VENUE_DIR_LENGTH = 32
 # AMS1's TInstance struct holds a 32-byte name buffer right before a linked-list
 # pointer (+0x208). Instance= names > 31 chars overflow into that pointer and
 # crash AMS.exe+0x0000b552 inside VidMan::Post() when exiting a track.
 MAX_INSTANCE_NAME_LENGTH = 31
+
+
+def venue_dir_name(venue):
+    """Keep AMS1 Locations/<dir> folder names short enough for gMotor 2.0 path buffers."""
+    clean = re.sub(r"\s+", "_", (venue or "").strip()) or "track"
+    if len(clean) <= MAX_VENUE_DIR_LENGTH:
+        return clean
+    suffix = hashlib.sha1(clean.casefold().encode("utf-8")).hexdigest()[:8]
+    prefix = clean[:MAX_VENUE_DIR_LENGTH - 9].rstrip("_-.") or "track"
+    return "%s_%s" % (prefix, suffix)
 
 
 def instance_identifier(name, used=None):
@@ -607,18 +620,20 @@ def stage_menu_images(preview, layout_dir, layout, texconv):
     return 2
 
 
-def stage_mas_archives(source_dir, stage_dir, venue):
-    names = (venue + ".mas", venue + "MAP.mas")
-    sources = [os.path.join(source_dir, name) for name in names]
+def stage_mas_archives(source_dir, stage_dir, venue, dest_stem=None):
+    src_names = (venue + ".mas", venue + "MAP.mas")
+    sources = [os.path.join(source_dir, name) for name in src_names]
     present = [os.path.isfile(path) for path in sources]
     if any(present) and not all(present):
-        raise RuntimeError("both %s and %s are required for MAS packaging" % names)
+        raise RuntimeError("both %s and %s are required for MAS packaging" % src_names)
     if not all(present):
         return ""
-    for source, name in zip(sources, names):
+    stem = dest_stem or venue
+    dst_names = (stem + ".mas", stem + "MAP.mas")
+    for source, name in zip(sources, dst_names):
         shutil.copy2(source, os.path.join(stage_dir, name))
     return "\n".join("MASFile=" + name for name in
-                     (venue + ".MAS", venue + "MAP.MAS"))
+                     (stem + ".MAS", stem + "MAP.MAS"))
 
 
 SKY_ASSETS = (
@@ -961,6 +976,7 @@ def main():
 
     out_dir = os.path.abspath(args.out_dir)
     venue = os.path.basename(out_dir)
+    venue_dir = venue_dir_name(venue)
     layout = layout_identifier(venue)
     gmt_dir = os.path.join(out_dir, "gmt")
     with open(os.path.join(gmt_dir, "exported.json")) as f:
@@ -1005,7 +1021,7 @@ def main():
             row["shadow_receiver"] = is_shadow_receiver(None, row, mode=args.track_shadows)
             row["_meta"] = None
 
-    stage = os.path.join(out_dir, "ams1", venue)
+    stage = os.path.join(out_dir, "ams1", venue_dir)
     if os.path.isdir(stage):
         shutil.rmtree(stage)
     lay_dir = os.path.join(stage, layout)
@@ -1013,7 +1029,7 @@ def main():
     maps = os.path.join(stage, "maps")
     for d in (lay_dir, gmts, maps):
         os.makedirs(d)
-    mas_files = stage_mas_archives(out_dir, stage, venue)
+    mas_files = stage_mas_archives(out_dir, stage, venue, dest_stem=venue_dir)
 
     aiw_src = os.path.join(out_dir, venue + ".AIW")
     lap_km = 0.0
@@ -1065,10 +1081,10 @@ def main():
         src_name_map=staged_to_src,
     )
 
-    skybox = stage_skybox(stage, args.install, venue)
+    skybox = stage_skybox(stage, args.install, venue_dir)
     sx, sy, sz = sun_direction(out_dir)
     max_shadow_range = 250.0 if args.track_shadows == "full" else 200.0
-    lines = [SCN_HEADER.format(venue=venue, layout=layout,
+    lines = [SCN_HEADER.format(venue=venue, venue_dir=venue_dir, layout=layout,
                                mas_files=mas_files,
                                amb=args.ambient, sun=args.sun,
                                sx=sx, sy=sy, sz=sz,
@@ -1128,7 +1144,7 @@ def main():
         lines.extend(stage_pit_gates(stage, aiw_src))
     write(os.path.join(lay_dir, layout + ".scn"), "\n".join(lines))
     write(os.path.join(lay_dir, layout + ".gdb"),
-          GDB.format(venue=venue, layout=layout, km=lap_km,
+          GDB.format(venue=venue, venue_dir=venue_dir, layout=layout, km=lap_km,
                      mi=lap_km * 0.621371, hour=args.hour))
     menu_images = stage_menu_images(args.preview, lay_dir, layout, args.texconv)
     if menu_images:
@@ -1137,7 +1153,7 @@ def main():
     tdf = os.path.join(out_dir, venue + ".tdf")
     if not os.path.exists(tdf):
         raise SystemExit("refusing to stage track without its terrain file: %s" % tdf)
-    shutil.copy2(tdf, os.path.join(stage, venue + ".tdf"))
+    shutil.copy2(tdf, os.path.join(stage, venue_dir + ".tdf"))
 
     aiw = os.path.join(out_dir, venue + ".AIW")
     has_aiw = os.path.exists(aiw)
@@ -1250,7 +1266,7 @@ def main():
 
     if args.install:
         try:
-            dest = install_location(stage, args.install, venue)
+            dest = install_location(stage, args.install, venue_dir)
             print("installed -> %s" % dest)
         except (OSError, RuntimeError) as exc:
             print("could not install: %s" % exc)

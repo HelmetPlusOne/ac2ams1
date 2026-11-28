@@ -409,6 +409,12 @@ class AmsFinalizeTests(unittest.TestCase):
         self.assertLessEqual(len(layout + ".scn"), 23)
         self.assertEqual(layout, finalize_track.layout_identifier(venue))
 
+        long_venue = "90sgdsp_kazekaeshi_touge_kazekaeshi_uphill"
+        vdir = finalize_track.venue_dir_name(long_venue)
+        self.assertLessEqual(len(vdir), finalize_track.MAX_VENUE_DIR_LENGTH)
+        self.assertEqual(vdir, finalize_track.venue_dir_name(long_venue))
+        self.assertEqual(finalize_track.venue_dir_name("90sgdsp_imosenotaki"), "90sgdsp_imosenotaki")
+
     def test_verifier_finds_short_scene_name_from_gdb(self):
         with tempfile.TemporaryDirectory() as root:
             layout_dir = os.path.join(root, "short_layout")
@@ -529,6 +535,7 @@ class AmsFinalizeTests(unittest.TestCase):
     def test_stages_ams_location_layout_and_references(self):
         with tempfile.TemporaryDirectory() as root:
             venue = "sample_track_name_that_exceeds_the_scene_filename_limit"
+            venue_dir = finalize_track.venue_dir_name(venue)
             layout_id = finalize_track.layout_identifier(venue)
             out_dir = os.path.join(root, venue)
             gmt_dir = os.path.join(out_dir, "gmt")
@@ -568,11 +575,12 @@ class AmsFinalizeTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     finalize_track.main()
 
-            stage = os.path.join(out_dir, "ams1", venue)
+            stage = os.path.join(out_dir, "ams1", venue_dir)
             layout = os.path.join(stage, layout_id)
-            self.assertTrue(os.path.isfile(os.path.join(stage, venue + ".tdf")))
-            self.assertTrue(os.path.isfile(os.path.join(stage, venue + ".mas")))
-            self.assertTrue(os.path.isfile(os.path.join(stage, venue + "MAP.mas")))
+            self.assertLessEqual(len(venue_dir), finalize_track.MAX_VENUE_DIR_LENGTH)
+            self.assertTrue(os.path.isfile(os.path.join(stage, venue_dir + ".tdf")))
+            self.assertTrue(os.path.isfile(os.path.join(stage, venue_dir + ".mas")))
+            self.assertTrue(os.path.isfile(os.path.join(stage, venue_dir + "MAP.mas")))
             self.assertTrue(os.path.isfile(os.path.join(stage, "gmt", "xfinish.gmt")))
             self.assertTrue(os.path.isfile(os.path.join(stage, "maps", "road.dds")))
             scene_path = os.path.join(layout, layout_id + ".scn")
@@ -580,15 +588,16 @@ class AmsFinalizeTests(unittest.TestCase):
             with open(scene_path, encoding="utf-8") as f:
                 scene = f.read()
             self.assertIn("Light=FDirect01", scene)
-            self.assertIn("SearchPath=%s\\%s" % (venue, layout_id), scene)
-            self.assertIn("MASFile=%s.MAS" % venue, scene)
-            self.assertIn("MASFile=%sMAP.MAS" % venue, scene)
-            self.assertIn("SearchPath=%s\\gmt" % venue, scene)
+            self.assertIn("SearchPath=%s\\%s" % (venue_dir, layout_id), scene)
+            self.assertIn("MASFile=%s.MAS" % venue_dir, scene)
+            self.assertIn("MASFile=%sMAP.MAS" % venue_dir, scene)
+            self.assertIn("SearchPath=%s\\gmt" % venue_dir, scene)
             with open(os.path.join(layout, layout_id + ".gdb"), encoding="utf-8") as f:
                 database = f.read()
             self.assertTrue(database.startswith(layout_id + "\n"))
             self.assertIn("GrandPrixName = %s" % venue, database)
-            self.assertIn("TerrainDataFile = ..\\%s.tdf" % venue, database)
+            self.assertIn("SettingsFolder = %s" % venue_dir, database)
+            self.assertIn("TerrainDataFile = ..\\%s.tdf" % venue_dir, database)
 
     def test_texture_target_size_halves_and_snaps_to_dx9_pow2(self):
         self.assertEqual(fix_textures.target_size(4096, 0.5), 2048)
@@ -1972,6 +1981,98 @@ class StandaloneCliTests(unittest.TestCase):
             self.assertFalse(any(rx.match("disabled_mesh") for rx in mesh_rx))
             self.assertFalse(any(rx.match("night_only_mesh") for rx in mesh_rx))
             self.assertFalse(any(rx.match("1ROAD100") for rx in mesh_rx))
+
+    def test_make_aiw_fallback_grid_starts(self):
+        import make_aiw
+
+        st = [((1.0, 0.0, 2.0), 0.1, "AC_START_0")]
+        pt = [((3.0, 0.0, 4.0), 0.2, "AC_PIT_0"), ((5.0, 0.0, 6.0), 0.2, "AC_PIT_1")]
+        hl = [((7.0, 0.0, 8.0), 0.3, "AC_HOTLAP_START_0")]
+        wps = [(0.0, 0.0, float(i * 5), 6.0) for i in range(20)]
+
+        # 1. Explicit AC_START wins when present.
+        got, src = make_aiw.fallback_grid_starts(st, pits=pt, hotlaps=hl, wps=wps)
+        self.assertIsNone(src)
+        self.assertEqual(got, st)
+
+        # 2. Missing AC_START falls back to AC_PIT (e.g. touge/drift tracks).
+        got, src = make_aiw.fallback_grid_starts([], pits=pt, hotlaps=hl, wps=wps)
+        self.assertEqual(src, "AC_PIT")
+        self.assertEqual(got, pt)
+
+        # 3. Missing AC_START and AC_PIT falls back to AC_HOTLAP_START.
+        got, src = make_aiw.fallback_grid_starts([], pits=[], hotlaps=hl, wps=wps)
+        self.assertEqual(src, "AC_HOTLAP_START")
+        self.assertEqual(got, hl)
+
+        # 4. Missing all markers synthesizes grid spots along waypoints.
+        got, src = make_aiw.fallback_grid_starts([], pits=[], hotlaps=[], wps=wps)
+        self.assertEqual(src, "waypoints")
+        self.assertEqual(len(got), 8)
+        self.assertEqual(got[0][0], (0.0, 0.0, 0.0))
+
+        # 5. collect() captures AC_HOTLAP_START when hotlaps list is provided.
+        ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10.0, 2.0, 30.0, 1]
+        node_pit = types.SimpleNamespace(type=1, name="AC_PIT_0", matrix=ident, parent=None, vertex_count=0)
+        node_hl = types.SimpleNamespace(type=1, name="AC_HOTLAP_START_0", matrix=ident, parent=None, vertex_count=0)
+        fake_kn5 = types.SimpleNamespace(walk=lambda: [node_pit, node_hl])
+        collected_hl = []
+        s_out, p_out, _r, _s = make_aiw.collect(fake_kn5, hotlaps=collected_hl)
+        self.assertEqual(s_out, [])
+        self.assertEqual(len(p_out), 1)
+        self.assertEqual(len(collected_hl), 1)
+        self.assertEqual(collected_hl[0][2], "AC_HOTLAP_START_0")
+
+    def test_node_is_renderable_honors_active_flag_and_ancestors(self):
+        import convert_track
+        import kn5
+
+        placement = kn5.Node()
+        placement.name = "__placement__"
+        self.assertEqual(placement.active, 1)
+
+        root = kn5.Node()
+        root.name = "root"
+        root.parent = placement
+
+        road_vis = kn5.Node()
+        road_vis.name = "polySurface10_SUB0"
+        road_vis.visible = 1
+        road_vis.renderable = 1
+        road_vis.active = 1
+        road_vis.parent = root
+        self.assertTrue(convert_track.node_is_renderable(road_vis))
+
+        # Invisible AC physics meshes (1ROAD/1WALL) often use active=0 with visible=1, renderable=1.
+        phys_road = kn5.Node()
+        phys_road.name = "1ROAD"
+        phys_road.visible = 1
+        phys_road.renderable = 1
+        phys_road.active = 0
+        phys_road.parent = root
+        self.assertFalse(convert_track.node_is_renderable(phys_road))
+
+        # Inactive ancestor hides child meshes.
+        hidden_group = kn5.Node()
+        hidden_group.name = "hidden_colliders"
+        hidden_group.active = 0
+        hidden_group.parent = root
+        child = kn5.Node()
+        child.name = "1WALL"
+        child.visible = 1
+        child.renderable = 1
+        child.active = 1
+        child.parent = hidden_group
+        self.assertFalse(convert_track.node_is_renderable(child))
+
+        # AC_* marker nodes and visible=0 / renderable=0 remain non-renderable.
+        marker = kn5.Node()
+        marker.name = "AC_PIT_0"
+        marker.visible = 1
+        marker.renderable = 1
+        marker.active = 1
+        marker.parent = root
+        self.assertFalse(convert_track.node_is_renderable(marker))
 
 
 if __name__ == "__main__":

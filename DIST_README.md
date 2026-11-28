@@ -6,6 +6,12 @@ Converted tracks are automatically installed into the `out\` folder next to `ac2
 
 ## Changelog
 
+### TBD
+
+- **AIW `[GRID]`/`[TELEPORT]` fallback for tracks without `AC_START_*`**: Falls back to `AC_PIT_*`, `AC_HOTLAP_START_*`, or synthesized waypoint spots when an AC track omits `AC_START_*` markers (e.g. point-to-point touge/drift stages), preventing AMS1 load crashes from empty grid/teleport sections.
+- **AMS1 location folder name length cap**: Caps staged/installed `Locations/<dir>` folder names at 32 characters (with a deterministic hash suffix when longer) so relative `.scn`, `.tdf`, and loading-screen paths stay within gMotor 2.0 path buffers.
+- **KN5 `active=0` invisible mesh handling**: Honors each KN5 node's `active` flag (and inactive ancestor nodes) when deciding renderability, keeping invisible physics colliders (`1ROAD`/`1WALL` with `NULL.dds` or solid placeholder textures) collidable with `Render=False`.
+
 ### 28 Nov 2026
 
 - **CSP hidden mesh support (`ext_config.ini`)**: Honors unconditional CSP `[MESH_ADJUSTMENT]` rules with `IS_RENDERABLE = 0` / `IS_VISIBLE = 0` / `IS_ACTIVE = 0`, preventing invisible physics overlays and replaced 2D crowd placeholders (e.g. Sebring 60s) from rendering visibly while keeping collision intact.

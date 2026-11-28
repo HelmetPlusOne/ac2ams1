@@ -1195,6 +1195,25 @@ def loose_textures(track_dir, tex_dir, names):
     return n
 
 
+def node_is_renderable(node):
+    """Return True when a KN5 mesh node should be rendered in-game.
+
+    AC skips rendering when a mesh has visible=0, renderable=0, or active=0
+    (or an inactive ancestor node), while still using leading-digit meshes
+    such as 1ROAD / 1WALL for collision.
+    """
+    if not (getattr(node, "visible", 1) and getattr(node, "renderable", 1)):
+        return False
+    if (getattr(node, "name", "") or "").upper().startswith("AC_"):
+        return False
+    cur = node
+    while cur is not None:
+        if not getattr(cur, "active", 1):
+            return False
+        cur = getattr(cur, "parent", None)
+    return True
+
+
 def needs_blend(mat, alpha):
     """Blend only where AC blends, and only if there is transparency to show.
 
@@ -1289,7 +1308,7 @@ def main():
                 any(rx.match(n.name) for rx in hidden_mesh_rx)
                 or any(rx.match(mat.name) for rx in hidden_mat_rx)
             )
-            base_render = bool(n.visible and n.renderable) and not n.name.upper().startswith("AC_")
+            base_render = node_is_renderable(n)
             if base_render and csp_hidden:
                 csp_hidden_count += 1
             mesh_rows.append({
